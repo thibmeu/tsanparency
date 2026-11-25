@@ -425,9 +425,15 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
     return { version: state.versions.length - 1, position };
   }
 
-  const handlers: Record<Operation, (r: Reader, principal: string, current: Head) => Promise<Uint8Array>> = {
-    async [Operation.Search](r, principal, current) {
-      const req = decodeSearchRequest(r);
+  type Handler = (request: Uint8Array, principal: string, current: Head) => Promise<Uint8Array>;
+  /** Decodes the whole request before running anything, so a malformed request has no effect */
+  const decoded =
+    <T>(read: (r: Reader) => T, run: (req: T, principal: string, current: Head) => Promise<Uint8Array>): Handler =>
+    (request, principal, current) =>
+      run(decode(request, read), principal, current);
+
+  const handlers: Record<Operation, Handler> = {
+    [Operation.Search]: decoded(decodeSearchRequest, async (req, principal, current) => {
       const n = current.treeSize;
       checkLast(req.last, n);
       await authorize(Operation.Search, req.label, principal);
@@ -450,10 +456,9 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
         },
         req.version !== undefined,
       );
-    },
+    }),
 
-    async [Operation.ContactMonitor](r, principal, current) {
-      const req = decodeContactMonitorRequest(r);
+    [Operation.ContactMonitor]: decoded(decodeContactMonitorRequest, async (req, principal, current) => {
       const n = current.treeSize;
       checkLast(req.last, n);
       if (!req.entries.length) throw new KTError(KTErrorCode.InvalidRequest);
@@ -468,10 +473,9 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
       const p = prover(state, req.label, n, req.last);
       contactMonitor(p, params, req.entries);
       return encodeContactMonitorResponse({ treeHead: req.last === n ? undefined : current, monitor: p.finish() });
-    },
+    }),
 
-    async [Operation.OwnerInit](r, principal, current) {
-      const req = decodeOwnerInitRequest(r);
+    [Operation.OwnerInit]: decoded(decodeOwnerInitRequest, async (req, principal, current) => {
       const n = current.treeSize;
       checkLast(req.last, n);
       await authorize(Operation.OwnerInit, req.label, principal);
@@ -497,10 +501,9 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
         ),
         init: p.finish(),
       });
-    },
+    }),
 
-    async [Operation.OwnerMonitor](r, principal, current) {
-      const req = decodeOwnerMonitorRequest(r);
+    [Operation.OwnerMonitor]: decoded(decodeOwnerMonitorRequest, async (req, principal, current) => {
       const n = current.treeSize;
       checkLast(req.last, n);
       await authorize(Operation.OwnerMonitor, req.label, principal);
@@ -524,10 +527,9 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
         (x) => (greatestAt(state, x) ?? -1) > advertised || ladders++ >= OWNER_LADDERS,
       );
       return encodeOwnerMonitorResponse({ treeHead: req.last === n ? undefined : current, monitor: p.finish() });
-    },
+    }),
 
-    async [Operation.Update](r, principal, current) {
-      const req = decodeUpdateRequest(r);
+    [Operation.Update]: decoded(decodeUpdateRequest, async (req, principal, current) => {
       checkLast(req.last, current.treeSize);
       await authorize(Operation.Update, req.label, principal);
       let state = peekLabel(req.label);
@@ -577,7 +579,7 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
         ),
         update: p.finish(),
       });
-    },
+    }),
   };
 
   function checkLast(last: number | undefined, n: number): void {
@@ -631,7 +633,7 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
         if (!current) throw new KTError(KTErrorCode.NotFound);
         readers.set(current.treeSize, (readers.get(current.treeSize) ?? 0) + 1);
         try {
-          return await decode(request, (r) => handler(r, principal, current));
+          return await handler(request, principal, current);
         } finally {
           const left = readers.get(current.treeSize)! - 1;
           if (left) readers.set(current.treeSize, left);

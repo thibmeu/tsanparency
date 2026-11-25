@@ -1,7 +1,8 @@
 import { fc, test } from "@fast-check/vitest";
 import { describe, expect } from "vitest";
 import { type Client, KTErrorCode, type State, createClient, isKTError } from "../src/index.ts";
-import { decodeOwnerMonitorRequest, encodeOwnerMonitorRequest } from "../src/messages.ts";
+import { decodeOwnerMonitorRequest, encodeOwnerMonitorRequest, encodeUpdateRequest } from "../src/messages.ts";
+import { Operation } from "../src/client.ts";
 import { decode } from "../src/tls.ts";
 import { RMW, SUITE_NAMES, type World, world } from "./harness.ts";
 
@@ -115,6 +116,40 @@ describe.each(SUITE_NAMES)("label owner with %s", (_, cipherSuite) => {
     expect(isKTError(err, KTErrorCode.InvalidResponse)).toBe(true);
     const again = await client.ownerMonitor("alice", stopped.state).catch((e) => e);
     expect(isKTError(again, KTErrorCode.InvalidResponse)).toBe(true);
+  });
+
+  test("an Update rejected for trailing bytes creates nothing", async () => {
+    const w = await world({ cipherSuite }, { authorize: async () => true });
+    await w.log.tick();
+    const size = w.log.size;
+    const request = encodeUpdateRequest({ label: bytes("alice"), values: [bytes("k0")] });
+    const err = await w.log
+      .handle(Operation.Update, new Uint8Array([...request, 0]), { principal: "owner" })
+      .catch((e) => e);
+    expect(isKTError(err, KTErrorCode.InvalidRequest)).toBe(true);
+    await w.log.tick();
+    expect(w.log.size).toBe(size + 1);
+    const reader = await w.client("bob");
+    const missing = await reader.search("alice", reader.initialState()).catch((e) => e);
+    expect(isKTError(missing, KTErrorCode.NotFound)).toBe(true);
+  });
+
+  test("contact operations keep owner state", async () => {
+    const w = await world({ cipherSuite }, open);
+    await w.log.tick();
+    const client = await owners(w);
+    let state: State = (await client.ownerInit("alice", client.initialState())).state;
+    state = (await client.update("alice", [bytes("k0")], state)).state;
+    for (let i = 0; i < 3; i++) {
+      w.clock.now += RMW;
+      await w.log.tick();
+      state = structuredClone((await client.search("alice", state)).state);
+      expect(state.owner?.label).toEqual(bytes("alice"));
+      state = structuredClone((await client.monitor("alice", state)).state);
+      expect(state.owner?.label).toEqual(bytes("alice"));
+      state = (await client.update("alice", [bytes(`k${i + 1}`)], state)).state;
+    }
+    await monitorUntilDone(w, client, state);
   });
 
   test("owner operations need authorization", async () => {

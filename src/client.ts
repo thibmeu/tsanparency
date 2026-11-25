@@ -364,7 +364,7 @@ export async function createClient(
           monitoring,
           ladder: ladderFor(monitoring, prior?.ladder ?? [], data),
         };
-        return { value: res.value, version: t, state: { checkpoint: next, contact } };
+        return { value: res.value, version: t, state: { ...state, checkpoint: next, contact } };
       } catch (e) {
         return fail(e);
       }
@@ -391,7 +391,7 @@ export async function createClient(
         const next = await conclude(verifier, res.treeHead, checkpoint, signal);
         const monitoring = shrink(new Map(updated.map((e) => [e.position, e.version])), n);
         const ladder = ladderFor(monitoring, contact.ladder, data);
-        return { state: { checkpoint: next, contact: { ...contact, monitoring, ladder } } };
+        return { state: { ...state, checkpoint: next, contact: { ...contact, monitoring, ladder } } };
       } catch (e) {
         return fail(e);
       }
