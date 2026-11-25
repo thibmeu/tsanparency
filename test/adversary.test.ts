@@ -56,6 +56,7 @@ async function rogueLog(cipherSuite: (typeof SUITE_NAMES)[number][1]) {
       size: n,
       timestamp: (x) => entries[x]!.timestamp,
       prefixTree: (x) => entries[x]!.tree,
+      prefixRoot: (x) => rootHash(entries[x]!.tree),
       head,
     };
     const prover = new Prover(snapshot, req.last ?? 0, (v) => vrf.prove(vrfInput(label, v)).output);

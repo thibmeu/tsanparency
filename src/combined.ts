@@ -394,7 +394,9 @@ export interface View {
 export interface Snapshot {
   readonly size: number;
   timestamp(x: number): number;
+  /** Prefix tree of an entry, which may throw once the entry has been pruned */
   prefixTree(x: number): Node;
+  prefixRoot(x: number): Uint8Array;
   /** Head of a balanced log subtree. */
   head(r: Range): Uint8Array;
 }
@@ -448,7 +450,7 @@ export class Prover implements Context {
   finish(): CombinedTreeProof {
     const log = this.#log;
     const provided = [...this.#ts.keys()].filter((x) => !this.#retained.has(x)).sort((a, b) => a - b);
-    const leaves = new Map(provided.map((x) => [x, logLeaf(this.#ts.get(x)!, log.prefixTree(x)?.hash ?? zero)]));
+    const leaves = new Map(provided.map((x) => [x, logLeaf(this.#ts.get(x)!, log.prefixRoot(x))]));
     const m = this.#m;
     const retained = m > 0 ? { size: m, heads: fullSubtrees(m).map((r) => log.head(r)) } : undefined;
     const inclusion: Uint8Array[] = [];
@@ -460,13 +462,11 @@ export class Prover implements Context {
     return {
       timestamps: this.#timestamps,
       prefixProofs: this.#proofs,
-      prefixRoots: provided.filter((x) => !this.#withLadder.has(x)).map((x) => log.prefixTree(x)?.hash ?? zero),
+      prefixRoots: provided.filter((x) => !this.#withLadder.has(x)).map((x) => log.prefixRoot(x)),
       inclusion,
     };
   }
 }
-
-const zero = new Uint8Array(32);
 
 export interface LadderData {
   readonly vrfOutput: Uint8Array;

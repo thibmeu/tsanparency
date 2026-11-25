@@ -73,6 +73,28 @@ describe("search and monitor against an honest log", () => {
     expect(b.state.contact.ladder.map((e) => e.version)).toEqual([0, 1, 3, 4]);
   });
 
+  test("expired entries are pruned, so monitoring too late reports expiry", async () => {
+    const w = await world({ maximumLifetime: 3 * RMW, maxAhead: 100 });
+    await w.log.append({ label: "alice", value: bytes("v0"), expectedVersion: null });
+    w.clock.now += 10;
+    await w.log.tick();
+    w.clock.now += 10;
+    await w.log.append({ label: "alice", value: bytes("v1"), expectedVersion: 0 });
+    const client = await w.client("bob");
+    const found = await client.search("alice", client.initialState());
+    expect(found.state.contact.monitoring.length).toBeGreaterThan(0);
+    const due = client.schedule(found.state)!;
+    for (let i = 0; i < 12; i++) {
+      w.clock.now += RMW / 2;
+      await w.log.tick();
+    }
+    expect(w.clock.now).toBeGreaterThan(due.before!);
+    const late = await client.monitor("alice", found.state).catch((e) => e);
+    expect(isKTError(late, KTErrorCode.Expired)).toBe(true);
+    // The value is still found, from unexpired entries
+    expect(text((await client.search("alice", found.state)).value)).toBe("v1");
+  });
+
   test("reuses the advertised head when nothing changed", async () => {
     const w = await world();
     await w.log.append({ label: "alice", value: bytes("k"), expectedVersion: null });

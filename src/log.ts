@@ -20,6 +20,7 @@ import {
   logParent,
   suiteOf,
   treeHeadTBS,
+  treeHeadVerifier,
   vrfInput,
 } from "./crypto.ts";
 import { KTError, KTErrorCode } from "./errors.ts";
@@ -40,6 +41,7 @@ import {
   encodeUpdateResponse,
 } from "./messages.ts";
 import { type Node, insert, rootHash } from "./prefix.ts";
+import { type StoredVersion, type Store, memoryStore } from "./store.ts";
 import { type Reader, decode } from "./tls.ts";
 import { Operation } from "./client.ts";
 
@@ -69,6 +71,8 @@ export interface LogOptions {
    */
   readonly authorize?: (request: Authorization) => boolean | Promise<boolean>;
   readonly limits?: Partial<Limits>;
+  /** Where log entries are persisted. Defaults to memory. */
+  readonly store?: Store;
   /** Milliseconds since the Unix epoch. */
   readonly now?: () => number;
 }
@@ -118,12 +122,15 @@ interface Version {
 
 interface LabelState {
   readonly versions: Version[];
-  readonly vrf: Map<number, { proof: Uint8Array; output: Uint8Array }>;
+  /** VRF outputs, with proofs computed on first use */
+  readonly vrf: Map<number, { output: Uint8Array; proof?: Uint8Array }>;
 }
 
 interface Entry {
   readonly timestamp: number;
-  readonly tree: Node;
+  readonly root: Uint8Array;
+  /** Cleared once the entry expires (Section 7.1, Appendix D) */
+  tree: Node;
 }
 
 interface Head {
@@ -145,6 +152,8 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
     maximumLifetime: config.maximumLifetime,
   };
 
+  const store = options.store ?? memoryStore();
+  let lastRoot: Uint8Array | undefined;
   const entries: Entry[] = [];
   /** heads[k][i] is the head of the balanced subtree of size 2^k starting at i * 2^k. */
   const heads: Uint8Array[][] = [];
@@ -158,44 +167,103 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
   const snapshot = (size: number): Snapshot => ({
     size,
     timestamp: (x) => entries[x]!.timestamp,
-    prefixTree: (x) => entries[x]!.tree,
+    prefixTree: (x) => {
+      if (x < pruned) throw new KTError(KTErrorCode.Expired);
+      return entries[x]!.tree;
+    },
+    prefixRoot: (x) => entries[x]!.root,
     head: (r: Range) => heads[Math.log2(r.size)]![r.start / r.size]!,
   });
 
   const vrfOf = (state: LabelState, label: Uint8Array, v: number) => {
     let out = state.vrf.get(v);
-    if (!out) {
+    if (!out?.proof) {
       const { proof, output } = vrf.prove(vrfInput(label, v));
+      if (out && !equalBytes(out.output, output)) throw new Error("stored VRF output does not match the key");
       out = { proof, output };
       state.vrf.set(v, out);
     }
-    return out;
+    return out as { output: Uint8Array; proof: Uint8Array };
   };
+  const vrfOutput = (state: LabelState, label: Uint8Array, v: number) =>
+    state.vrf.get(v)?.output ?? vrfOf(state, label, v).output;
 
   /** Appends a log entry, signs it, then makes it visible. Rolls back on failure. */
-  async function publish(tree: Node, rollback: () => void): Promise<number> {
+  /** Adds a log entry's leaf and the balanced subtree heads it completes, and returns the new root */
+  function grow(timestamp: number, tree: Node): Uint8Array {
     const n = entries.length;
-    const timestamp = Math.max(now(), entries.at(-1)?.timestamp ?? 0);
-    entries.push({ timestamp, tree });
+    entries.push({ timestamp, root: rootHash(tree), tree });
     let value = logLeaf(timestamp, rootHash(tree));
     for (let k = 0, i = n; ; k++, i = (i - 1) / 2) {
       (heads[k] ??= []).push(value);
       if (i % 2 === 0) break;
       value = logParent(heads[k]![i - 1]!, k === 0, value, k === 0);
     }
+    return rootFromFullSubtrees(n + 1, fullSubtrees(n + 1).map(snapshot(n + 1).head));
+  }
+
+  let pruned = 0;
+  /**
+   * Drops the prefix trees of expired entries, keeping their root hashes for
+   * inclusion proofs. Nodes still shared with newer trees stay reachable.
+   */
+  function prune(): void {
+    const ml = config.maximumLifetime;
+    if (ml === undefined) return;
+    const rightmost = entries.at(-1)!.timestamp;
+    for (; pruned < entries.length - 1 && rightmost - entries[pruned]!.timestamp >= ml; pruned++)
+      entries[pruned]!.tree = null;
+  }
+
+  function shrinkTo(n: number): void {
+    pruned = Math.min(pruned, n);
+    entries.length = n;
+    for (let k = 0, i = n; heads[k] && heads[k]!.length > i; k++, i = Math.floor(i / 2)) heads[k]!.length = i;
+  }
+
+  /**
+   * Appends a log entry, signs it and stores it, then makes it visible. Rolls back
+   * on failure, and catches up with the store when another writer got there first.
+   */
+  async function publish(tree: Node, versions: readonly StoredVersion[], rollback: () => void): Promise<number> {
+    const n = entries.length;
+    const timestamp = Math.max(now(), entries.at(-1)?.timestamp ?? 0);
+    const root = grow(timestamp, tree);
     try {
-      const size = n + 1;
-      const root = rootFromFullSubtrees(size, fullSubtrees(size).map(snapshot(size).head));
-      const tbs = treeHeadTBS(encodedConfig, size, root);
-      const sig = await crypto.subtle.sign(suite.signature.sign, options.signingKey.privateKey, tbs);
-      head = { treeSize: size, signature: new Uint8Array(sig) };
+      const tbs = treeHeadTBS(encodedConfig, n + 1, root);
+      const signature = new Uint8Array(
+        await crypto.subtle.sign(suite.signature.sign, options.signingKey.privateKey, tbs),
+      );
+      await store.append(n, { timestamp, versions, signature });
+      head = { treeSize: n + 1, signature };
+      prune();
       return n;
     } catch (e) {
-      entries.length = n;
-      for (let k = 0, i = n; heads[k] && heads[k]!.length > i; k++, i = Math.floor(i / 2)) heads[k]!.length = i;
+      shrinkTo(n);
       rollback();
+      await replay(n).catch(() => {});
       throw e;
     }
+  }
+
+  /** Rebuilds memory from stored entries at and after position `from` */
+  async function replay(from: number): Promise<void> {
+    for await (const e of store.read(from)) {
+      const position = entries.length;
+      let tree = entries.at(-1)?.tree ?? null;
+      for (const v of e.versions) {
+        const state = labelState(v.label);
+        if (v.version !== state.versions.length) throw new Error("stored versions are not consecutive");
+        const c = commitment(v.opening, v.label, v.version, v.value);
+        tree = insert(tree, v.vrfOutput, c);
+        state.versions.push({ position, opening: v.opening, value: v.value, commitment: c });
+        state.vrf.set(v.version, { output: v.vrfOutput });
+      }
+      const root = grow(e.timestamp, tree);
+      head = { treeSize: position + 1, signature: e.signature };
+      lastRoot = root;
+    }
+    if (entries.length) prune();
   }
 
   function enqueue<T>(signal: AbortSignal | undefined, work: () => Promise<T>): Promise<T> {
@@ -276,14 +344,17 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
     if ((expected ?? -1) !== latest) throw new KTError(KTErrorCode.Conflict);
     let tree = entries.at(-1)?.tree ?? null;
     const position = entries.length;
+    const stored: StoredVersion[] = [];
     for (const value of values) {
       const version = state.versions.length;
       const opening = crypto.getRandomValues(new Uint8Array(NC));
       const c = commitment(opening, label, version, value);
-      tree = insert(tree, vrfOf(state, label, version).output, c);
+      const output = vrfOutput(state, label, version);
+      tree = insert(tree, output, c);
       state.versions.push({ position, opening, value, commitment: c });
+      stored.push({ label, version, opening, value, vrfOutput: output });
     }
-    await publish(tree, () => {
+    await publish(tree, stored, () => {
       state.versions.length = latest + 1;
     });
     return { version: state.versions.length - 1, position };
@@ -447,6 +518,13 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
     if (!allowed) throw new KTError(KTErrorCode.Unauthorized);
   }
 
+  await replay(0);
+  if (head && lastRoot) {
+    const verify = await treeHeadVerifier(config);
+    if (!(await verify(head.treeSize, lastRoot, head.signature)))
+      throw new Error("stored log does not match the configuration");
+  }
+
   return {
     get size() {
       return head?.treeSize ?? 0;
@@ -469,7 +547,7 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
 
     tick({ signal } = {}) {
       return enqueue(signal, async () => {
-        await publish(entries.at(-1)?.tree ?? null, () => {});
+        await publish(entries.at(-1)?.tree ?? null, [], () => {});
       });
     },
 

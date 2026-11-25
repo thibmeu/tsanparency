@@ -29,3 +29,4 @@ export {
   openLog,
 } from "./log.ts";
 export type { MonitorMapEntry } from "./messages.ts";
+export { type Store, type StoredEntry, type StoredVersion, memoryStore } from "./store.ts";
