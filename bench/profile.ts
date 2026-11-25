@@ -47,9 +47,7 @@ await session.post("Profiler.enable");
 await session.post("Profiler.setSamplingInterval", { interval: 100 });
 
 let i = 0;
-await profile(session, "search, first contact", 50, () => f.client.search(`user-${i++ % 500}`, f.initial));
-const found = await f.client.search("user-1", f.initial);
-await profile(session, "search, returning", 50, () =>
-  f.client.search("user-2", { checkpoint: found.state.checkpoint }),
-);
+await profile(session, "search, first contact", 50, () => f.client.search(`user-${i++ % 500}`));
+const found = await f.client.search("user-1");
+await profile(session, "search, returning", 50, () => f.client.search("user-2", { checkpoint: found.checkpoint }));
 await profile(session, "append", 200, () => f.append(`user-${i++ % 500}`));

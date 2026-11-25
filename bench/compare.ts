@@ -62,7 +62,7 @@ export async function compare(print: (line: string) => void): Promise<void> {
     const clientT: number[] = [];
     for (let i = 0; i < 100; i++) {
       const t = performance.now();
-      await client.search(`user-${i % 200}`, client.initialState());
+      await client.search(`user-${i % 200}`);
       clientT.push(performance.now() - t - serverT.at(-1)!);
     }
     print(`ours ${name} search log ${mean(serverT).toFixed(3)} ms`);

@@ -1,5 +1,5 @@
 /** A log with `entries` appends over `labels` labels, and a client wired to it in-process. */
-import { type Exchange, type State, createClient, openLog } from "../src/index.ts";
+import { type Exchange, createClient, openLog } from "../src/index.ts";
 import { CipherSuite, SUITES } from "../src/crypto.ts";
 
 export async function fixture(entries = Number(process.env.ENTRIES ?? 2000), labels = 500) {
@@ -31,5 +31,5 @@ export async function fixture(entries = Number(process.env.ENTRIES ?? 2000), lab
   for (let i = 0; i < entries; i++) await append(`user-${i % labels}`);
   const exchange: Exchange = (op, req, { signal }) => log.handle(op, req, { principal: "p", signal });
   const client = await createClient(config, exchange, { now: () => clock.now });
-  return { config, log, clock, client, exchange, append, initial: client.initialState() as State };
+  return { config, log, clock, client, exchange, append };
 }

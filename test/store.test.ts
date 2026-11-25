@@ -28,13 +28,15 @@ describe.each(SUITE_NAMES)("durable store with %s", (_, cipherSuite) => {
     expect(reopened.log.size).toBe(w.log.size);
     const client = await w.client("bob");
     for (const label of versions.keys()) {
-      const found = await client.search(label, client.initialState());
+      const found = await client.search(label);
       const request = new TextEncoder().encode(label);
       const ask = (log: typeof w.log) =>
         log.handle("search", new Uint8Array([0, request.length, ...request, 0]), { principal: "bob" });
       expect(await ask(reopened.log)).toEqual(await ask(w.log));
       // State verified against the first instance keeps verifying against the second
-      const again = await (await reopened.client("bob")).search(label, found.state);
+      const again = await (
+        await reopened.client("bob")
+      ).search(label, { checkpoint: found.checkpoint, contact: found.contact });
       expect(again.version).toBe(found.version);
     }
   });
@@ -48,7 +50,7 @@ describe.each(SUITE_NAMES)("durable store with %s", (_, cipherSuite) => {
     await expect(b.log.append({ label: "alice", value: bytes("b1"), expectedVersion: 0 })).rejects.toThrow();
     expect(b.log.size).toBe(2);
     await b.log.append({ label: "alice", value: bytes("b2"), expectedVersion: 1 });
-    const found = await (await b.client("bob")).search("alice", (await b.client("bob")).initialState());
+    const found = await (await b.client("bob")).search("alice");
     expect(found.version).toBe(2);
   });
 
@@ -85,7 +87,7 @@ describe.each(SUITE_NAMES)("durable store with %s", (_, cipherSuite) => {
     await expect(b.log.append({ label: "alice", value: bytes("b1"), expectedVersion: 0 })).rejects.toThrow();
     await expect(b.log.tick()).rejects.toThrow("valid log");
     const client = await b.client("bob");
-    await expect(client.search("alice", client.initialState())).rejects.toThrow();
+    await expect(client.search("alice")).rejects.toThrow();
   });
 
   test("a write queued behind a failed catch-up does not run", async () => {
@@ -122,7 +124,7 @@ describe.each(SUITE_NAMES)("durable store with %s", (_, cipherSuite) => {
     const { version, position } = await w.log.append({ label: "alice", value: bytes("a0"), expectedVersion: null });
     expect([version, position, w.log.size]).toEqual([0, 0, 1]);
     const client = await w.client("bob");
-    expect((await client.search("alice", client.initialState())).version).toBe(0);
+    expect((await client.search("alice")).version).toBe(0);
   });
 
   test("a truncated store is detected with the last known size", async () => {
@@ -160,7 +162,7 @@ describe.each(SUITE_NAMES)("durable store with %s", (_, cipherSuite) => {
     w.clock.now += 1000;
     await w.log.append({ label: "alice", value: bytes("a1"), expectedVersion: 0 });
     const client = await w.client("bob");
-    const pending = client.search("alice", client.initialState(), { version: 0 });
+    const pending = client.search("alice", { version: 0 });
     for (let i = 0; i < 6; i++) {
       w.clock.now += 1000;
       await w.log.tick();

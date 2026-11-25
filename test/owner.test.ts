@@ -1,6 +1,6 @@
 import { fc, test } from "@fast-check/vitest";
 import { describe, expect } from "vitest";
-import { type Client, KTErrorCode, type State, createClient, isKTError } from "../src/index.ts";
+import { type Client, type Contact, KTErrorCode, type OwnerState, createClient, isKTError } from "../src/index.ts";
 import { decodeOwnerMonitorRequest, encodeOwnerMonitorRequest, encodeUpdateRequest } from "../src/messages.ts";
 import { Operation } from "../src/client.ts";
 import { decode } from "../src/tls.ts";
@@ -12,20 +12,20 @@ const owners = (w: World) => w.client("owner");
 const open = { authorize: () => true };
 
 /** Learns every version created elsewhere, one log entry at a time */
-async function catchUp(client: Client, state: State): Promise<State> {
+async function catchUp(client: Client, state: OwnerState): Promise<OwnerState> {
   for (;;) {
-    const r = await client.update("alice", [], state).catch((e) => e);
+    const r = await client.update(state.owner, [], state).catch((e) => e);
     if (isKTError(r, KTErrorCode.InvalidRequest)) return state;
     if (r instanceof Error) throw r;
-    state = r.state;
+    state = r;
   }
 }
 
-async function monitorUntilDone(w: World, client: Client, state: State): Promise<State> {
+async function monitorUntilDone(w: World, client: Client, state: OwnerState): Promise<OwnerState> {
   for (let i = 0; i < 64; i++) {
-    const r = await client.ownerMonitor("alice", state);
-    state = r.state;
-    if (r.done && !state.owner!.monitoring.length) return state;
+    const r = await client.ownerMonitor(state.owner, state);
+    state = r;
+    if (r.done && !state.owner.monitoring.length) return state;
     if (!r.done) state = await catchUp(client, state);
     w.clock.now += RMW / 2;
     await w.log.tick();
@@ -38,38 +38,40 @@ describe.each(SUITE_NAMES)("label owner with %s", (_, cipherSuite) => {
     const w = await world({ cipherSuite }, open);
     await w.log.tick();
     const client = await owners(w);
-    let state: State = (await client.ownerInit("alice", client.initialState())).state;
-    const first = await client.update("alice", [bytes("k0")], state);
+    let state: OwnerState = await client.ownerInit("alice");
+    const first = await client.update(state.owner, [bytes("k0")], state);
     expect(first.versions.map((v) => v.version)).toEqual([0]);
     expect(first.disregarded).toBe(false);
-    state = first.state;
+    state = first;
     w.clock.now += 10;
-    const batch = await client.update("alice", [bytes("k1"), bytes("k2"), bytes("k3")], state);
+    const batch = await client.update(state.owner, [bytes("k1"), bytes("k2"), bytes("k3")], state);
     expect(batch.versions.map((v) => v.version)).toEqual([1, 2, 3]);
-    state = batch.state;
+    state = batch;
 
     const reader = await w.client("bob");
-    const found = await reader.search("alice", reader.initialState());
+    const found = await reader.search("alice");
     expect(text(found.value)).toBe("k3");
-    expect(text((await reader.search("alice", found.state, { version: 2 })).value)).toBe("k2");
+    expect(
+      text((await reader.search("alice", { checkpoint: found.checkpoint, contact: found.contact, version: 2 })).value),
+    ).toBe("k2");
 
     state = await monitorUntilDone(w, client, state);
-    expect(state.owner!.start).toBeDefined();
+    expect(state.owner.start).toBeDefined();
   });
 
   test("learns versions created by someone else", async () => {
     const w = await world({ cipherSuite }, open);
     await w.log.append({ label: "alice", value: bytes("a0"), expectedVersion: null });
     const client = await owners(w);
-    let state: State = (await client.ownerInit("alice", client.initialState())).state;
+    let state: OwnerState = await client.ownerInit("alice");
     w.clock.now += 10;
     await w.log.append({ label: "alice", values: [bytes("a1"), bytes("a2")], expectedVersion: 0 });
-    const r = await client.update("alice", [], state);
+    const r = await client.update(state.owner, [], state);
     expect(r.disregarded).toBe(true);
     expect(r.versions.map((v) => text(v.value))).toEqual(["a0"]);
-    state = await catchUp(client, r.state);
-    expect(state.owner!.upcoming).toHaveLength(3);
-    const own = await client.update("alice", [bytes("mine")], state);
+    state = await catchUp(client, r);
+    expect(state.owner.upcoming).toHaveLength(3);
+    const own = await client.update(state.owner, [bytes("mine")], state);
     expect(own.versions).toEqual([{ version: 3, value: bytes("mine") }]);
   });
 
@@ -82,11 +84,11 @@ describe.each(SUITE_NAMES)("label owner with %s", (_, cipherSuite) => {
     await w.log.tick();
     const client = await owners(w);
     // Entry 1 is the root of a three entry tree, distinguished once the log is older than the RMW
-    const init = await client.ownerInit("alice", client.initialState(), { start: 1 });
-    expect(init.state.owner.previous).toEqual([1]);
-    const bad = await client.ownerInit("alice", client.initialState(), { start: 2 }).catch((e) => e);
+    const init = await client.ownerInit("alice", { start: 1 });
+    expect(init.owner.previous).toEqual([1]);
+    const bad = await client.ownerInit("alice", { start: 2 }).catch((e) => e);
     expect(isKTError(bad, KTErrorCode.InvalidRequest)).toBe(true);
-    await monitorUntilDone(w, client, init.state);
+    await monitorUntilDone(w, client, init);
   });
 
   test("a log that stops owner monitoring at a version it will not report is caught", async () => {
@@ -103,18 +105,18 @@ describe.each(SUITE_NAMES)("label owner with %s", (_, cipherSuite) => {
       },
       { now: () => w.clock.now },
     );
-    let state: State = (await client.ownerInit("alice", client.initialState())).state;
-    state = (await client.update("alice", [], state)).state;
+    let state: OwnerState = await client.ownerInit("alice");
+    state = await client.update(state.owner, [], state);
     for (let i = 0; i < 4; i++) {
       w.clock.now += 2 * RMW;
       await w.log.tick();
     }
-    const stopped = await client.ownerMonitor("alice", state);
+    const stopped = await client.ownerMonitor(state.owner, state);
     expect(stopped.done).toBe(false);
-    expect(stopped.state.owner!.stalled).toBe(0);
-    const err = await client.update("alice", [], stopped.state).catch((e) => e);
+    expect(stopped.owner.stalled).toBe(0);
+    const err = await client.update(stopped.owner, [], stopped).catch((e) => e);
     expect(isKTError(err, KTErrorCode.InvalidResponse)).toBe(true);
-    const again = await client.ownerMonitor("alice", stopped.state).catch((e) => e);
+    const again = await client.ownerMonitor(stopped.owner, stopped).catch((e) => e);
     expect(isKTError(again, KTErrorCode.InvalidResponse)).toBe(true);
   });
 
@@ -130,24 +132,24 @@ describe.each(SUITE_NAMES)("label owner with %s", (_, cipherSuite) => {
     await w.log.tick();
     expect(w.log.size).toBe(size + 1);
     const reader = await w.client("bob");
-    const missing = await reader.search("alice", reader.initialState()).catch((e) => e);
+    const missing = await reader.search("alice").catch((e) => e);
     expect(isKTError(missing, KTErrorCode.NotFound)).toBe(true);
   });
 
-  test("contact operations keep owner state", async () => {
+  test("contact and owner operations share a checkpoint", async () => {
     const w = await world({ cipherSuite }, open);
     await w.log.tick();
     const client = await owners(w);
-    let state: State = (await client.ownerInit("alice", client.initialState())).state;
-    state = (await client.update("alice", [bytes("k0")], state)).state;
+    let state: OwnerState = await client.ownerInit("alice");
+    state = await client.update(state.owner, [bytes("k0")], state);
+    let contact: Contact | undefined;
     for (let i = 0; i < 3; i++) {
       w.clock.now += RMW;
       await w.log.tick();
-      state = structuredClone((await client.search("alice", state)).state);
-      expect(state.owner?.label).toEqual(bytes("alice"));
-      state = structuredClone((await client.monitor("alice", state)).state);
-      expect(state.owner?.label).toEqual(bytes("alice"));
-      state = (await client.update("alice", [bytes(`k${i + 1}`)], state)).state;
+      const found = await client.search("alice", { checkpoint: state.checkpoint, contact });
+      const checked = await client.monitor(found.contact, found);
+      contact = structuredClone(checked.contact);
+      state = await client.update(state.owner, [bytes(`k${i + 1}`)], checked);
     }
     await monitorUntilDone(w, client, state);
   });
@@ -160,12 +162,12 @@ describe.each(SUITE_NAMES)("label owner with %s", (_, cipherSuite) => {
       const w = await world({ cipherSuite }, open);
       for (let i = 0; i < ticks; i++) await w.log.tick();
       const client = await owners(w);
-      const state = (await client.ownerInit("alice", client.initialState())).state;
+      const state = await client.ownerInit("alice");
       // Someone else creates the version, so its value comes from the log
       await w.log.append({ label: "alice", value: bytes("theirs"), expectedVersion: null });
-      const r = await client.update("alice", [], state);
+      const r = await client.update(state.owner, [], state);
       expect([r.disregarded, r.pending]).toEqual([true, pending]);
-      await monitorUntilDone(w, client, r.state);
+      await monitorUntilDone(w, client, r);
     }
   });
 
@@ -173,19 +175,19 @@ describe.each(SUITE_NAMES)("label owner with %s", (_, cipherSuite) => {
     const w = await world({ cipherSuite }, open);
     await w.log.tick();
     const client = await owners(w);
-    const state = (await client.ownerInit("alice", client.initialState())).state;
+    const state = await client.ownerInit("alice");
     const values = Array.from({ length: 200 }, (_, i) => new Uint8Array([i]));
-    const r = await client.update("alice", values, state);
+    const r = await client.update(state.owner, values, state);
     expect(r.versions).toHaveLength(200);
     const reader = await w.client("bob");
-    expect((await reader.search("alice", reader.initialState(), { version: 150 })).value).toEqual(values[150]);
+    expect((await reader.search("alice", { version: 150 })).value).toEqual(values[150]);
   });
 
   test("owner operations need authorization", async () => {
     const w = await world({ cipherSuite });
     await w.log.tick();
     const client = await owners(w);
-    const err = await client.ownerInit("alice", client.initialState()).catch((e) => e);
+    const err = await client.ownerInit("alice").catch((e) => e);
     expect(isKTError(err, KTErrorCode.Unauthorized)).toBe(true);
   });
 
@@ -204,7 +206,7 @@ describe.each(SUITE_NAMES)("label owner with %s", (_, cipherSuite) => {
       const w = await world({ cipherSuite }, open);
       await w.log.tick();
       const client = await owners(w);
-      let state: State = (await client.ownerInit("alice", client.initialState())).state;
+      let state: OwnerState = await client.ownerInit("alice");
       let versions = 0;
       for (const s of steps) {
         if (s.kind === "other") {
@@ -216,14 +218,14 @@ describe.each(SUITE_NAMES)("label owner with %s", (_, cipherSuite) => {
           state = await catchUp(client, state);
           w.clock.now += 1;
           const values = Array.from({ length: s.count }, (_, i) => bytes(`own-${versions + i}`));
-          state = (await client.update("alice", values, state)).state;
+          state = await client.update(state.owner, values, state);
           versions += s.count;
         } else if ("gap" in s) {
           w.clock.now += s.gap;
           await w.log.tick();
           if (s.kind === "monitor") {
-            const r = await client.ownerMonitor("alice", state);
-            state = r.done ? r.state : await catchUp(client, r.state);
+            const r = await client.ownerMonitor(state.owner, state);
+            state = r.done ? r : await catchUp(client, r);
           }
         }
       }

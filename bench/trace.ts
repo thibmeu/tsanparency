@@ -13,7 +13,7 @@ const { OP = "search", ITERS = "50" } = process.env;
 const f = await fixture();
 let i = 0;
 const ops: Record<string, () => Promise<unknown>> = {
-  search: () => f.client.search(`user-${i++ % 500}`, f.initial),
+  search: () => f.client.search(`user-${i++ % 500}`),
   append: () => f.append(`user-${i++ % 500}`),
 };
 const op = ops[OP];

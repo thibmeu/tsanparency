@@ -91,10 +91,14 @@ export interface Contact {
   readonly ladder: readonly LadderEntry[];
 }
 
-export interface State {
-  readonly checkpoint: Checkpoint | null;
-  readonly contact?: Contact | undefined;
-  readonly owner?: Owner | undefined;
+export interface ContactState {
+  readonly checkpoint: Checkpoint;
+  readonly contact: Contact;
+}
+
+export interface OwnerState {
+  readonly checkpoint: Checkpoint;
+  readonly owner: Owner;
 }
 
 /** What a label owner retains about a version (Sections 8.3, 9.1) */
@@ -127,8 +131,7 @@ export interface Owner {
   readonly stalled?: number | undefined;
 }
 
-export interface UpdateResult {
-  readonly state: State & { readonly checkpoint: Checkpoint; readonly owner: Owner };
+export interface UpdateResult extends OwnerState {
   /** Log entry holding the versions */
   readonly position: number;
   /** The versions created there, which are someone else's when `values` was disregarded */
@@ -163,32 +166,31 @@ export interface Schedule {
 }
 
 export interface SearchOptions extends CallOptions {
+  readonly checkpoint?: Checkpoint | undefined;
+  readonly contact?: Contact | undefined;
   /** Looks up this version instead of the greatest one (Section 7) */
   readonly version?: number | undefined;
 }
 
-export interface SearchResult {
+export interface SearchResult extends ContactState {
   readonly value: Uint8Array;
   readonly version: number;
-  readonly state: State & { readonly checkpoint: Checkpoint; readonly contact: Contact };
 }
 
 export interface Client {
-  /** State for a client that has never talked to this log. Use only on first contact. */
-  initialState(): State;
   /**
    * Greatest-version search, or fixed-version search when `version` is set.
-   * Persist `state` before using `value`.
+   * Persist the checkpoint and contact before using `value`.
    */
-  search(label: Uint8Array | string, state: State, options?: SearchOptions): Promise<SearchResult>;
+  search(label: Uint8Array | string, options?: SearchOptions): Promise<SearchResult>;
   /**
-   * When contact monitoring is due for `state`, or undefined when nothing needs
+   * When contact monitoring is due for this contact, or undefined when nothing needs
    * monitoring. Times are log timestamps in milliseconds since the epoch, which an
    * honest log keeps close to the local clock.
    */
-  schedule(state: State): Schedule | undefined;
+  schedule(contact: Contact, options: { readonly checkpoint: Checkpoint }): Schedule | undefined;
   /** Contact monitoring. Returns the input state when nothing needs monitoring. */
-  monitor(label: Uint8Array | string, state: State, options?: CallOptions): Promise<{ readonly state: State }>;
+  monitor(contact: Contact, options: CallOptions & { readonly checkpoint: Checkpoint }): Promise<ContactState>;
   /**
    * Takes ownership of a label from `start`, an unexpired distinguished entry, or
    * from the start of the log when absent (Section 13.3). Versions created after
@@ -196,28 +198,25 @@ export interface Client {
    */
   ownerInit(
     label: Uint8Array | string,
-    state: State,
-    options?: CallOptions & { readonly start?: number | undefined },
-  ): Promise<{ readonly state: State & { readonly checkpoint: Checkpoint; readonly owner: Owner } }>;
+    options?: CallOptions & { readonly checkpoint?: Checkpoint | undefined; readonly start?: number | undefined },
+  ): Promise<OwnerState>;
   /**
    * Creates new versions, or with no values learns versions created elsewhere
    * (Section 13.5). Call again while `disregarded` is set to catch up.
    */
   update(
-    label: Uint8Array | string,
+    owner: Owner,
     values: readonly Uint8Array[],
-    state: State,
-    options?: CallOptions,
+    options: CallOptions & { readonly checkpoint: Checkpoint },
   ): Promise<UpdateResult>;
   /**
    * Owner monitoring (Section 13.4). Repeat until `done`, or call `update` with no
    * values when the log stops at a version the owner does not know yet.
    */
   ownerMonitor(
-    label: Uint8Array | string,
-    state: State,
-    options?: CallOptions,
-  ): Promise<{ readonly state: State; readonly done: boolean }>;
+    owner: Owner,
+    options: CallOptions & { readonly checkpoint: Checkpoint },
+  ): Promise<OwnerState & { readonly done: boolean }>;
 }
 
 export interface ClientOptions {
@@ -260,7 +259,7 @@ export async function createClient(
   async function conclude(
     verifier: Verifier,
     head: TreeHead | undefined,
-    previous: Checkpoint | null,
+    previous: Checkpoint | undefined,
     signal: AbortSignal | undefined,
   ): Promise<Checkpoint> {
     const { view, root } = verifier.finish();
@@ -297,12 +296,10 @@ export async function createClient(
   };
 
   return {
-    initialState: () => ({ checkpoint: null }),
-
-    schedule(state) {
-      const checkpoint = checkCheckpoint(state.checkpoint, binding);
-      const map = state.contact?.monitoring ?? [];
-      if (!checkpoint || !map.length) return undefined;
+    schedule(record, { checkpoint: saved }) {
+      const checkpoint = checkCheckpoint(saved, binding);
+      const map = checkContact(record, binding, record.label).monitoring;
+      if (!map.length) return undefined;
       const rmw = config.reasonableMonitoringWindow;
       const ts = new Map(checkpoint.frontier.map((e) => [e.position, e.timestamp]));
       const view = { n: checkpoint.treeSize, timestamp: (x: number) => ts.get(x)!, ladder: () => {} };
@@ -321,11 +318,12 @@ export async function createClient(
       return bounds.length ? { after, before: Math.min(...bounds) } : { after };
     },
 
-    async search(label, state, { signal, version } = {}) {
+    async search(label, { checkpoint: saved, contact: record, signal, version } = {}) {
       if (version !== undefined && !isUint(version, MAX_VERSION)) throw new KTError(KTErrorCode.InvalidRequest);
       const name = toLabel(label);
-      const checkpoint = checkCheckpoint(state.checkpoint, binding);
-      const prior = state.contact && checkContact(state.contact, binding, name);
+      const checkpoint = saved === undefined ? undefined : checkCheckpoint(saved, binding);
+      if (record && !checkpoint) throw new KTError(KTErrorCode.InvalidState);
+      const prior = record && checkContact(record, binding, name);
       const last = checkpoint?.treeSize;
       const bytes = await call(Operation.Search, encodeSearchRequest({ last, label: name, version }), signal);
       try {
@@ -346,7 +344,7 @@ export async function createClient(
           if (!vrfOutput) throw new Error("invalid VRF proof");
           data.set(v, { vrfOutput, commitment: v === t ? target : step.commitment });
         }
-        const verifier = new Verifier(n, checkpoint ?? undefined, res.search, data);
+        const verifier = new Verifier(n, checkpoint, res.search, data);
         updateView(verifier, last ?? 0);
         const { terminal, distinguished } =
           version === undefined ? greatestVersionSearch(verifier, params, t) : fixedVersionSearch(verifier, params, t);
@@ -370,18 +368,17 @@ export async function createClient(
           monitoring,
           ladder: ladderFor(monitoring, prior?.ladder ?? [], data),
         };
-        return { value: res.value, version: t, state: { ...state, checkpoint: next, contact } };
+        return { value: res.value, version: t, checkpoint: next, contact };
       } catch (e) {
         return fail(e);
       }
     },
 
-    async monitor(label, state, { signal } = {}) {
-      const name = toLabel(label);
-      const checkpoint = checkCheckpoint(state.checkpoint, binding);
-      if (!checkpoint || !state.contact) throw new KTError(KTErrorCode.InvalidState);
-      const contact = checkContact(state.contact, binding, name);
-      if (contact.monitoring.length === 0) return { state };
+    async monitor(record, { checkpoint: saved, signal }) {
+      const name = toLabel(record.label);
+      const checkpoint = checkCheckpoint(saved, binding);
+      const contact = checkContact(record, binding, name);
+      if (contact.monitoring.length === 0) return { checkpoint, contact };
       if (contact.monitoring.some((e) => e.position >= checkpoint.treeSize))
         throw new KTError(KTErrorCode.InvalidState);
       const last = checkpoint.treeSize;
@@ -397,17 +394,16 @@ export async function createClient(
         const next = await conclude(verifier, res.treeHead, checkpoint, signal);
         const monitoring = shrink(new Map(updated.map((e) => [e.position, e.version])), n);
         const ladder = ladderFor(monitoring, contact.ladder, data);
-        return { state: { ...state, checkpoint: next, contact: { ...contact, monitoring, ladder } } };
+        return { checkpoint: next, contact: { ...contact, monitoring, ladder } };
       } catch (e) {
         return fail(e);
       }
     },
 
-    async ownerInit(label, state, { signal, start } = {}) {
+    async ownerInit(label, { checkpoint: saved, signal, start } = {}) {
       const name = toLabel(label);
-      const checkpoint = checkCheckpoint(state.checkpoint, binding);
+      const checkpoint = saved === undefined ? undefined : checkCheckpoint(saved, binding);
       if (start !== undefined && !isUint(start)) throw new KTError(KTErrorCode.InvalidRequest);
-      if (state.owner && !equalBytes(state.owner.label, name)) throw new KTError(KTErrorCode.InvalidState);
       const last = checkpoint?.treeSize;
       const bytes = await call(Operation.OwnerInit, encodeOwnerInitRequest({ last, label: name, start }), signal);
       try {
@@ -418,7 +414,7 @@ export async function createClient(
         // commitments for the versions that exist as of the start (Sections 8.3, 13.3)
         const versions = [...new Set([0, ...greatest.flatMap(baseLadder)])].sort((a, b) => a - b);
         const data = ladderData(name, versions, res.binaryLadder, (v) => v <= (greatest[0] ?? -1));
-        const verifier = new Verifier(n, checkpoint ?? undefined, res.init, data);
+        const verifier = new Verifier(n, checkpoint, res.init, data);
         updateView(verifier, last ?? 0);
         const { list } = ownerInit(verifier, params, start, (i) => greatest[i]);
         if (greatest.length > list.length) throw new Error("too many greatest versions");
@@ -427,21 +423,20 @@ export async function createClient(
           { binding, label: name, start, previous: greatest, upcoming: [], monitoring: [], versions: [] },
           data,
         );
-        return { state: { ...state, checkpoint: next, owner } };
+        return { checkpoint: next, owner };
       } catch (e) {
         return fail(e);
       }
     },
 
-    async update(label, values, state, { signal } = {}) {
-      const name = toLabel(label);
-      const checkpoint = checkCheckpoint(state.checkpoint, binding);
-      if (!state.owner) throw new KTError(KTErrorCode.InvalidState);
-      const owner = checkOwner(state.owner, binding, name);
+    async update(record, values, { checkpoint: saved, signal }) {
+      const name = toLabel(record.label);
+      const checkpoint = checkCheckpoint(saved, binding);
+      const owner = checkOwner(record, binding, name);
       if (!Array.isArray(values) || values.length > 255 || !values.every((v) => v instanceof Uint8Array))
         throw new KTError(KTErrorCode.InvalidRequest);
       values = values.map(copy);
-      const last = checkpoint?.treeSize;
+      const last = checkpoint.treeSize;
       const history = ownerHistory(owner);
       const before = history.greatest;
       const request = encodeUpdateRequest({ last, label: name, greatestVersion: before, values });
@@ -486,7 +481,7 @@ export async function createClient(
           if (!d) throw new Error("missing VRF output for a new version");
           data.set(v, { vrfOutput: d.vrfOutput, commitment: commitment(res.openings[i]!, name, v, value) });
         });
-        const verifier = new Verifier(n, checkpoint ?? undefined, res.update, data);
+        const verifier = new Verifier(n, checkpoint, res.update, data);
         updateView(verifier, last ?? 0);
         const distinguished = labelUpdate(verifier, params, history, res.position, created.length);
         const next = await conclude(verifier, res.treeHead, checkpoint, signal);
@@ -513,7 +508,8 @@ export async function createClient(
           data,
         );
         return {
-          state: { ...state, checkpoint: next, owner: updated },
+          checkpoint: next,
+          owner: updated,
           position: res.position,
           versions: created.map((value, i) => ({ version: (before ?? -1) + 1 + i, value })),
           disregarded,
@@ -524,11 +520,10 @@ export async function createClient(
       }
     },
 
-    async ownerMonitor(label, state, { signal } = {}) {
-      const name = toLabel(label);
-      const checkpoint = checkCheckpoint(state.checkpoint, binding);
-      if (!checkpoint || !state.owner) throw new KTError(KTErrorCode.InvalidState);
-      const owner = checkOwner(state.owner, binding, name);
+    async ownerMonitor(record, { checkpoint: saved, signal }) {
+      const name = toLabel(record.label);
+      const checkpoint = checkCheckpoint(saved, binding);
+      const owner = checkOwner(record, binding, name);
       if (owner.monitoring.some((e) => e.position >= checkpoint.treeSize)) throw new KTError(KTErrorCode.InvalidState);
       const last = checkpoint.treeSize;
       const history = ownerHistory(owner);
@@ -560,7 +555,7 @@ export async function createClient(
         const stuck = verified === undefined && !done;
         if (stuck && owner.stalled === greatest) throw new Error("the log keeps stopping owner monitoring");
         const owned = retainOwner({ ...moved, monitoring, stalled: stuck ? greatest : undefined }, data);
-        return { state: { ...state, checkpoint: next, owner: owned }, done };
+        return { checkpoint: next, owner: owned, done };
       } catch (e) {
         return fail(e);
       }
@@ -742,10 +737,9 @@ const isUint = (x: unknown, max = Number.MAX_SAFE_INTEGER): x is number =>
   Number.isSafeInteger(x) && (x as number) >= 0 && (x as number) <= max;
 
 /** Validates restored state before trusting it. */
-function checkCheckpoint(c: Checkpoint | null, binding: Uint8Array): Checkpoint | null {
-  if (c === null) return null;
+function checkCheckpoint(c: Checkpoint, binding: Uint8Array): Checkpoint {
   const ok =
-    typeof c === "object" &&
+    c != null &&
     isBytes(c.binding) &&
     equalBytes(c.binding, binding) &&
     isUint(c.treeSize) &&

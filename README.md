@@ -15,27 +15,30 @@ import { createClient, openLog } from "tsanparency";
 
 // Log side: append a binding and answer TLS-encoded requests
 const log = await openLog(config, { signingKey, vrfSecretKey });
-await log.append({ label: "alice@example.com", value: key, expectedVersion: null });
+await log.append({ label: "alice@example.com", value: aliceKey, expectedVersion: null });
+await log.append({ label: "bob@example.com", value: bobKey, expectedVersion: null });
 
 // Client side: the application owns transport and storage
 const client = await createClient(config, (operation, request, { signal }) =>
   log.handle(operation, request, { principal: "bob", signal }),
 );
-const found = await client.search("alice@example.com", client.initialState());
-await persist(found.state); // before using the key
-const older = await client.search("alice@example.com", found.state, { version: 0 });
+const alice = await client.search("alice@example.com");
+await persist(alice.checkpoint, alice.contact);
 
-// Monitor when due: client.schedule(state) says when monitoring can complete an entry,
-// and by when it must happen if the log has a maximum lifetime
-const due = client.schedule(found.state);
-const checked = await client.monitor("alice@example.com", found.state);
+const bob = await client.search("bob@example.com", { checkpoint: alice.checkpoint });
+await persist(bob.checkpoint, bob.contact);
+
+const checked = await client.monitor(alice.contact, { checkpoint: bob.checkpoint });
+await persist(checked.checkpoint, checked.contact);
 ```
 
 Logs persist one record per entry through a `Store` (`memoryStore()` by default): implement `read` and an atomic `append` at a position to back it with a database. A log with a maximum lifetime drops the prefix trees of expired entries.
 
 To follow the log tree without a log, `appendLeaf(size, fullSubtrees, leaf)` folds one leaf value into the full subtree heads, and `rootFromFullSubtrees` gives the root.
 
-Verified state is plain data with numbers and `Uint8Array`s, so it survives structured clone and IndexedDB. Persist the new state before using a result: a response that fails verification never changes it.
+Keep one checkpoint per log and a contact or owner record for each label you track. Save the returned checkpoint and record together before using a result. If calls overlap, check that both stored records still match what the call started from before replacing them. The records support structured clone and IndexedDB.
+
+To look up an older version, pass `{ checkpoint, contact, version }` to `search`. Call `schedule(contact, { checkpoint })` to find out when monitoring is due. For a label you own, `ownerInit(label, { checkpoint })` returns an owner record for `update(owner, values, { checkpoint })` and `ownerMonitor(owner, { checkpoint })`.
 
 See [examples/index.ts](examples/index.ts) for a runnable version.
 

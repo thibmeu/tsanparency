@@ -85,11 +85,11 @@ describe.each(SUITE_NAMES)("misbehaving log with %s", (_, cipherSuite) => {
     push();
     push();
     push("FAKE-KEY");
-    const first = await client.search("alice", client.initialState());
-    expect(first.state.contact.monitoring).toEqual([{ position: 2, version: 0 }]);
+    const first = await client.search("alice");
+    expect(first.contact.monitoring).toEqual([{ position: 2, version: 0 }]);
     push("real-key");
     push("real-key");
-    const err = await client.search("alice", first.state).catch((e) => e);
+    const err = await client.search("alice", { checkpoint: first.checkpoint, contact: first.contact }).catch((e) => e);
     expect(err?.code, String(err?.cause ?? err)).toBe(KTErrorCode.Equivocation);
   });
 });

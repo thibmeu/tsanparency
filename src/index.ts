@@ -12,7 +12,8 @@ export {
   type Schedule,
   type SearchOptions,
   type SearchResult,
-  type State,
+  type ContactState,
+  type OwnerState,
   Operation,
   createClient,
 } from "./client.ts";

@@ -1,6 +1,6 @@
 import { fc, test } from "@fast-check/vitest";
 import { describe, expect } from "vitest";
-import { type Client, type State, KTErrorCode, isKTError } from "../src/index.ts";
+import { type Client, type Contact, type Checkpoint, type ContactState, KTErrorCode, isKTError } from "../src/index.ts";
 import { CipherSuite } from "../src/crypto.ts";
 import { RMW, SUITE_NAMES, type World, world } from "./harness.ts";
 
@@ -28,14 +28,14 @@ const op: fc.Arbitrary<Op> = fc.oneof(
 
 /** A user's persisted state: one shared checkpoint plus a contact per label. */
 interface Store {
-  checkpoint: State["checkpoint"];
-  contacts: Map<string, NonNullable<State["contact"]>>;
+  checkpoint: Checkpoint | undefined;
+  contacts: Map<string, Contact>;
 }
 
-const stateFor = (s: Store, l: string): State => ({ checkpoint: s.checkpoint, contact: s.contacts.get(l) });
-function commit(s: Store, l: string, next: State): void {
+const stateFor = (s: Store, l: string) => ({ checkpoint: s.checkpoint, contact: s.contacts.get(l) });
+function commit(s: Store, l: string, next: ContactState): void {
   s.checkpoint = next.checkpoint;
-  if (next.contact) s.contacts.set(l, next.contact);
+  s.contacts.set(l, next.contact);
 }
 
 /** Replays ops against an honest log, checking every answer against a model. */
@@ -75,19 +75,19 @@ async function replay(
       expect(result).not.toBeInstanceOf(Error);
       expect(new TextDecoder().decode(result.value)).toBe(versions.at(-1));
       expect(result.version).toBe(versions.length - 1);
-      commit(store, o.label, result.state);
+      commit(store, o.label, result);
     } else if (o.kind === "fixed") {
       const versions = model.get(o.label);
-      const result = await client.search(o.label, stateFor(store, o.label), { version: o.version }).catch((e) => e);
+      const result = await client.search(o.label, { ...stateFor(store, o.label), version: o.version }).catch((e) => e);
       if (!versions || o.version >= versions.length) {
         expect(isKTError(result, KTErrorCode.NotFound)).toBe(true);
         continue;
       }
       expect(result).not.toBeInstanceOf(Error);
       expect(new TextDecoder().decode(result.value)).toBe(versions[o.version]);
-      commit(store, o.label, result.state);
+      commit(store, o.label, result);
     } else if (store.contacts.has(o.label)) {
-      commit(store, o.label, (await client.monitor(o.label, stateFor(store, o.label))).state);
+      commit(store, o.label, await client.monitor(store.contacts.get(o.label)!, { checkpoint: store.checkpoint! }));
     }
   }
   return model;
@@ -96,7 +96,7 @@ async function replay(
 async function setup(n: number, cipherSuite: CipherSuite) {
   const w = await world({ cipherSuite });
   const clients = await Promise.all(Array.from({ length: n }, (_, i) => w.client(`user-${i}`)));
-  const stores: Store[] = clients.map((c) => ({ checkpoint: c.initialState().checkpoint, contacts: new Map() }));
+  const stores: Store[] = clients.map(() => ({ checkpoint: undefined, contacts: new Map() }));
   return { w, clients, stores };
 }
 
@@ -136,7 +136,7 @@ describe.each(SUITE_NAMES)("protocol guarantees with %s", (_, cipherSuite) => {
       expect(isKTError(result, KTErrorCode.InvalidResponse)).toBe(true);
       expect(input).toEqual(before);
       if (input.contact?.monitoring.length) {
-        const monitored = await client.monitor("alice", input).catch((e) => e);
+        const monitored = await client.monitor(input.contact, { checkpoint: input.checkpoint! }).catch((e) => e);
         expect(isKTError(monitored, KTErrorCode.InvalidResponse)).toBe(true);
         expect(input).toEqual(before);
       }
@@ -155,7 +155,7 @@ describe.each(SUITE_NAMES)("protocol guarantees with %s", (_, cipherSuite) => {
       for (let i = 1; i < honest.w.log.size + b.length; i++) await fork.log.tick();
       const client = await fork.client("user-0");
       const result = await client.search("alice", stateFor(honest.stores[0]!, "alice")).catch((e) => e);
-      if (honest.stores[0]!.checkpoint === null) expect(result).not.toBeInstanceOf(Error);
+      if (honest.stores[0]!.checkpoint === undefined) expect(result).not.toBeInstanceOf(Error);
       else expect(isKTError(result, KTErrorCode.InvalidResponse)).toBe(true);
     },
   );
@@ -171,7 +171,7 @@ describe.each(SUITE_NAMES)("protocol guarantees with %s", (_, cipherSuite) => {
       }
       await w.log.append({ label: "alice", value: bytes("v1"), expectedVersion: 0 });
       const store = stores[0]!;
-      commit(store, "alice", (await clients[0]!.search("alice", stateFor(store, "alice"))).state);
+      commit(store, "alice", await clients[0]!.search("alice", stateFor(store, "alice")));
       let rounds = 0;
       while (store.contacts.get("alice")!.monitoring.length) {
         expect(rounds++).toBeLessThan(64);
@@ -179,7 +179,11 @@ describe.each(SUITE_NAMES)("protocol guarantees with %s", (_, cipherSuite) => {
           w.clock.now += g;
           await w.log.tick();
         }
-        commit(store, "alice", (await clients[0]!.monitor("alice", stateFor(store, "alice"))).state);
+        commit(
+          store,
+          "alice",
+          await clients[0]!.monitor(store.contacts.get("alice")!, { checkpoint: store.checkpoint! }),
+        );
       }
     },
   );
@@ -197,21 +201,21 @@ describe.each(SUITE_NAMES)("protocol guarantees with %s", (_, cipherSuite) => {
       for (let i = 0; i < extra; i++) await tick();
       w.clock.now += gap;
       await w.log.append({ label: "alice", value: bytes("v1"), expectedVersion: 0 });
-      let state: State = (await client.search("alice", client.initialState())).state;
-      for (let round = 0; state.contact!.monitoring.length; round++) {
+      let state: ContactState = await client.search("alice");
+      for (let round = 0; state.contact.monitoring.length; round++) {
         expect(round).toBeLessThan(4);
-        const due = client.schedule(state)!;
+        const due = client.schedule(state.contact, state)!;
         expect(due.before! - due.after).toBeGreaterThan(0);
         while (w.clock.now + gap < due.after) await tick();
         await tick();
         expect(w.clock.now).toBeLessThan(due.before!);
         // A search in between must not push the schedule past its deadline
-        if (research) state = (await client.search("alice", state)).state;
-        const again = client.schedule(state);
+        if (research) state = await client.search("alice", { checkpoint: state.checkpoint, contact: state.contact });
+        const again = client.schedule(state.contact, state);
         if (again?.before !== undefined) expect(again.after).toBeLessThanOrEqual(again.before);
-        state = (await client.monitor("alice", state)).state;
+        state = await client.monitor(state.contact, state);
       }
-      expect(client.schedule(state)).toBeUndefined();
+      expect(client.schedule(state.contact, state)).toBeUndefined();
     },
   );
 
@@ -234,7 +238,7 @@ describe.each(SUITE_NAMES)("protocol guarantees with %s", (_, cipherSuite) => {
         }
       }
       const version = pick % values.length;
-      const result = await client.search("alice", client.initialState(), { version }).catch((e) => e);
+      const result = await client.search("alice", { version }).catch((e) => e);
       if (isKTError(result, KTErrorCode.Expired)) return;
       expect(result).not.toBeInstanceOf(Error);
       expect(new TextDecoder().decode(result.value)).toBe(values[version]);
@@ -255,7 +259,7 @@ describe.each(SUITE_NAMES)("protocol guarantees with %s", (_, cipherSuite) => {
         }
         return clients[0]!.search("alice", stateFor(stores[0]!, "alice")).then((r) => {
           expect(new TextDecoder().decode(r.value)).toBe(`alice-${r.version}`);
-          expect(r.state.checkpoint.treeSize).toBeGreaterThan(r.version);
+          expect(r.checkpoint.treeSize).toBeGreaterThan(r.version);
         });
       });
       await Promise.all(work);
@@ -284,14 +288,14 @@ describe.each(SUITE_NAMES)("protocol guarantees with %s", (_, cipherSuite) => {
     await replay(w, clients, stores, ops, seeded());
     const restored = structuredClone(stateFor(stores[0]!, "alice"));
     const r = await clients[0]!.search("alice", restored);
-    expect(r.state.contact.label).toEqual(bytes("alice"));
+    expect(r.contact.label).toEqual(bytes("alice"));
   });
 
   test.prop([fc.uint8Array({ maxLength: 512 })], opts)("arbitrary responses never crash the client", async (junk) => {
     const { w } = await setup(0, cipherSuite);
     await w.log.append({ label: "alice", value: bytes("v0"), expectedVersion: null });
     const client = await w.client("user-0", () => junk);
-    const result = await client.search("alice", client.initialState()).catch((e) => e);
+    const result = await client.search("alice").catch((e) => e);
     expect(isKTError(result, KTErrorCode.InvalidResponse)).toBe(true);
   });
 });

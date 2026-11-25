@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { KTErrorCode, isKTError } from "../src/index.ts";
+import { type ContactState, KTErrorCode, isKTError } from "../src/index.ts";
 import { decode } from "../src/tls.ts";
 import { RMW, world } from "./harness.ts";
 
@@ -12,26 +12,26 @@ describe("search and monitor against an honest log", () => {
     await w.log.append({ label: "alice", value: bytes("key-0"), expectedVersion: null });
     const client = await w.client("bob");
 
-    const found = await client.search("alice", client.initialState());
+    const found = await client.search("alice");
     expect(text(found.value)).toBe("key-0");
     expect(found.version).toBe(0);
-    expect(found.state.checkpoint.treeSize).toBe(1);
+    expect(found.checkpoint.treeSize).toBe(1);
 
     w.clock.now += 10;
     await w.log.tick();
     w.clock.now += 10;
     await w.log.append({ label: "alice", value: bytes("key-1"), expectedVersion: 0 });
-    const second = await client.search("alice", found.state);
+    const second = await client.search("alice", { checkpoint: found.checkpoint, contact: found.contact });
     expect(text(second.value)).toBe("key-1");
-    expect(second.state.contact.monitoring.length).toBeGreaterThan(0);
+    expect(second.contact.monitoring.length).toBeGreaterThan(0);
 
-    let state = second.state as Parameters<typeof client.monitor>[1];
-    for (let i = 0; i < 12 && state.contact!.monitoring.length; i++) {
+    let state: ContactState = second;
+    for (let i = 0; i < 12 && state.contact.monitoring.length; i++) {
       w.clock.now += RMW / 2;
       await w.log.tick();
-      state = (await client.monitor("alice", state)).state;
+      state = await client.monitor(state.contact, state);
     }
-    expect(state.contact!.monitoring).toEqual([]);
+    expect(state.contact.monitoring).toEqual([]);
   });
 
   test("a newer version terminating where an older one is monitored replaces it", async () => {
@@ -45,14 +45,14 @@ describe("search and monitor against an honest log", () => {
     await w.log.tick();
     await append("v3", 2);
     const client = await w.client("bob");
-    const a = await client.search("alice", client.initialState());
-    expect(a.state.contact.monitoring).toEqual([{ position: 4, version: 3 }]);
+    const a = await client.search("alice");
+    expect(a.contact.monitoring).toEqual([{ position: 4, version: 3 }]);
     await append("v4", 3);
-    const b = await client.monitor("alice", a.state);
-    expect(b.state.contact!.monitoring).toEqual([{ position: 5, version: 3 }]);
-    const c = await client.search("alice", b.state);
+    const b = await client.monitor(a.contact, a);
+    expect(b.contact.monitoring).toEqual([{ position: 5, version: 3 }]);
+    const c = await client.search("alice", { checkpoint: b.checkpoint, contact: b.contact });
     expect(c.version).toBe(4);
-    expect(c.state.contact.monitoring).toEqual([{ position: 5, version: 4 }]);
+    expect(c.contact.monitoring).toEqual([{ position: 5, version: 4 }]);
   });
 
   test("an entry covered by a greater version at its nearest right ancestor is dropped", async () => {
@@ -66,12 +66,12 @@ describe("search and monitor against an honest log", () => {
     await w.log.tick();
     await append("v3", 2);
     const client = await w.client("bob");
-    const a = await client.search("alice", client.initialState());
-    expect(a.state.contact.monitoring).toEqual([{ position: 4, version: 3 }]);
+    const a = await client.search("alice");
+    expect(a.contact.monitoring).toEqual([{ position: 4, version: 3 }]);
     await append("v4", 3);
-    const b = await client.search("alice", a.state);
-    expect(b.state.contact.monitoring).toEqual([{ position: 5, version: 4 }]);
-    expect(b.state.contact.ladder.map((e) => e.version)).toEqual([0, 1, 3, 4]);
+    const b = await client.search("alice", { checkpoint: a.checkpoint, contact: a.contact });
+    expect(b.contact.monitoring).toEqual([{ position: 5, version: 4 }]);
+    expect(b.contact.ladder.map((e) => e.version)).toEqual([0, 1, 3, 4]);
   });
 
   test("expired entries are pruned, so monitoring too late reports expiry", async () => {
@@ -82,18 +82,20 @@ describe("search and monitor against an honest log", () => {
     w.clock.now += 10;
     await w.log.append({ label: "alice", value: bytes("v1"), expectedVersion: 0 });
     const client = await w.client("bob");
-    const found = await client.search("alice", client.initialState());
-    expect(found.state.contact.monitoring.length).toBeGreaterThan(0);
-    const due = client.schedule(found.state)!;
+    const found = await client.search("alice");
+    expect(found.contact.monitoring.length).toBeGreaterThan(0);
+    const due = client.schedule(found.contact, found)!;
     for (let i = 0; i < 12; i++) {
       w.clock.now += RMW / 2;
       await w.log.tick();
     }
     expect(w.clock.now).toBeGreaterThan(due.before!);
-    const late = await client.monitor("alice", found.state).catch((e) => e);
+    const late = await client.monitor(found.contact, found).catch((e) => e);
     expect(isKTError(late, KTErrorCode.Expired)).toBe(true);
     // The value is still found, from unexpired entries
-    expect(text((await client.search("alice", found.state)).value)).toBe("v1");
+    expect(text((await client.search("alice", { checkpoint: found.checkpoint, contact: found.contact })).value)).toBe(
+      "v1",
+    );
   });
 
   test("monitoring survives revoked access, within the grant table's bound", async () => {
@@ -108,16 +110,16 @@ describe("search and monitor against an honest log", () => {
     };
     await history("alice");
     const client = await w.client("bob");
-    const alice = await client.search("alice", client.initialState());
+    const alice = await client.search("alice");
     await history("carol");
-    expect(alice.state.contact.monitoring.length).toBeGreaterThan(0);
+    expect(alice.contact.monitoring.length).toBeGreaterThan(0);
     open = false;
-    await client.monitor("alice", alice.state);
+    await client.monitor(alice.contact, alice);
     // Finding another label evicts the only grant, so monitoring now needs authorization
     open = true;
-    await client.search("carol", { checkpoint: alice.state.checkpoint });
+    await client.search("carol", { checkpoint: alice.checkpoint });
     open = false;
-    const denied = await client.monitor("alice", alice.state).catch((e) => e);
+    const denied = await client.monitor(alice.contact, alice).catch((e) => e);
     expect(isKTError(denied, KTErrorCode.Unauthorized)).toBe(true);
   });
 
@@ -127,10 +129,14 @@ describe("search and monitor against an honest log", () => {
     await w.log.tick();
     await w.log.append({ label: "alice", values: [bytes("a0"), bytes("a1"), bytes("a2")], expectedVersion: null });
     const client = await w.client("bob");
-    const greatest = await client.search("alice", client.initialState());
-    expect(greatest.state.contact.monitoring).toEqual([{ position: 2, version: 2 }]);
-    const older = await client.search("alice", greatest.state, { version: 0 });
-    expect(older.state.contact.monitoring).toEqual([{ position: 2, version: 2 }]);
+    const greatest = await client.search("alice");
+    expect(greatest.contact.monitoring).toEqual([{ position: 2, version: 2 }]);
+    const older = await client.search("alice", {
+      checkpoint: greatest.checkpoint,
+      contact: greatest.contact,
+      version: 0,
+    });
+    expect(older.contact.monitoring).toEqual([{ position: 2, version: 2 }]);
   });
 
   test.skipIf(typeof globalThis.Buffer !== "function")("reused Node buffers do not change stored values", async () => {
@@ -139,7 +145,7 @@ describe("search and monitor against an honest log", () => {
     await w.log.append({ label: Buffer.from("alice"), value, expectedVersion: null });
     value.fill(0);
     const client = await w.client("bob");
-    expect(text((await client.search("alice", client.initialState())).value)).toBe("v0");
+    expect(text((await client.search("alice")).value)).toBe("v0");
     const wire = Buffer.from([0, 2, 0x61, 0x62]);
     const decoded = decode(wire, (r) => r.opaque(2));
     wire.fill(0);
@@ -150,10 +156,10 @@ describe("search and monitor against an honest log", () => {
     const w = await world();
     await w.log.append({ label: "alice", value: bytes("k"), expectedVersion: null });
     const client = await w.client("bob");
-    const a = await client.search("alice", client.initialState());
-    const b = await client.search("alice", a.state);
-    expect(b.state.checkpoint.treeSize).toBe(a.state.checkpoint.treeSize);
-    expect(b.state.checkpoint.signature).toEqual(a.state.checkpoint.signature);
+    const a = await client.search("alice");
+    const b = await client.search("alice", { checkpoint: a.checkpoint, contact: a.contact });
+    expect(b.checkpoint.treeSize).toBe(a.checkpoint.treeSize);
+    expect(b.checkpoint.signature).toEqual(a.checkpoint.signature);
   });
 
   test("rejects stale heads", async () => {
@@ -161,7 +167,7 @@ describe("search and monitor against an honest log", () => {
     await w.log.append({ label: "alice", value: bytes("k"), expectedVersion: null });
     const client = await w.client("bob");
     w.clock.now += w.config.maxBehind + 1;
-    const err = await client.search("alice", client.initialState()).catch((e) => e);
+    const err = await client.search("alice").catch((e) => e);
     expect(isKTError(err, KTErrorCode.Stale)).toBe(true);
   });
 
@@ -170,8 +176,8 @@ describe("search and monitor against an honest log", () => {
     await w.log.append({ label: "alice", value: bytes("k"), expectedVersion: null });
     await w.log.append({ label: "carol", value: bytes("k"), expectedVersion: null });
     const client = await w.client("bob");
-    const a = await client.search("alice", client.initialState());
-    const err = await client.search("carol", a.state).catch((e) => e);
+    const a = await client.search("alice");
+    const err = await client.search("carol", { checkpoint: a.checkpoint, contact: a.contact }).catch((e) => e);
     expect(isKTError(err, KTErrorCode.InvalidState)).toBe(true);
   });
 
@@ -181,7 +187,7 @@ describe("search and monitor against an honest log", () => {
     const client = await w.client("bob");
     const controller = new AbortController();
     controller.abort();
-    const err = await client.search("alice", client.initialState(), { signal: controller.signal }).catch((e) => e);
+    const err = await client.search("alice", { signal: controller.signal }).catch((e) => e);
     expect(err).toBe(controller.signal.reason);
   });
 });
