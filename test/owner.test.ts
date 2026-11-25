@@ -1,6 +1,8 @@
 import { fc, test } from "@fast-check/vitest";
 import { describe, expect } from "vitest";
-import { type Client, KTErrorCode, type State, isKTError } from "../src/index.ts";
+import { type Client, KTErrorCode, type State, createClient, isKTError } from "../src/index.ts";
+import { decodeOwnerMonitorRequest, encodeOwnerMonitorRequest } from "../src/messages.ts";
+import { decode } from "../src/tls.ts";
 import { RMW, SUITE_NAMES, type World, world } from "./harness.ts";
 
 const bytes = (s: string) => new TextEncoder().encode(s);
@@ -84,6 +86,35 @@ describe.each(SUITE_NAMES)("label owner with %s", (_, cipherSuite) => {
     const bad = await client.ownerInit("alice", client.initialState(), { start: 2 }).catch((e) => e);
     expect(isKTError(bad, KTErrorCode.InvalidRequest)).toBe(true);
     await monitorUntilDone(w, client, init.state);
+  });
+
+  test("a log that stops owner monitoring at a version it will not report is caught", async () => {
+    const w = await world({ cipherSuite }, open);
+    await w.log.append({ label: "alice", value: bytes("k0"), expectedVersion: null });
+    // Advertising no greatest version makes the log stop at the first entry holding one
+    const exchange = w.exchange("owner");
+    const client = await createClient(
+      w.config,
+      async (op, req, opts) => {
+        if (op !== "ownerMonitor") return exchange(op, req, opts);
+        const r = decode(req, decodeOwnerMonitorRequest);
+        return exchange(op, encodeOwnerMonitorRequest({ ...r, greatestVersion: undefined, start: undefined }), opts);
+      },
+      { now: () => w.clock.now },
+    );
+    let state: State = (await client.ownerInit("alice", client.initialState())).state;
+    state = (await client.update("alice", [], state)).state;
+    for (let i = 0; i < 4; i++) {
+      w.clock.now += 2 * RMW;
+      await w.log.tick();
+    }
+    const stopped = await client.ownerMonitor("alice", state);
+    expect(stopped.done).toBe(false);
+    expect(stopped.state.owner!.stalled).toBe(0);
+    const err = await client.update("alice", [], stopped.state).catch((e) => e);
+    expect(isKTError(err, KTErrorCode.InvalidResponse)).toBe(true);
+    const again = await client.ownerMonitor("alice", stopped.state).catch((e) => e);
+    expect(isKTError(again, KTErrorCode.InvalidResponse)).toBe(true);
   });
 
   test("owner operations need authorization", async () => {

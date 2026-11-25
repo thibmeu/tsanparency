@@ -349,6 +349,10 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
     return state;
   }
 
+  /** Label state for a read, without keeping state for labels that do not exist */
+  const peekLabel = (label: Uint8Array): LabelState =>
+    labels.get(bytesToHex(label)) ?? { versions: [], vrf: new Map() };
+
   /** Greatest version as of log entry x */
   const greatestAt = (state: LabelState, x: number): number | undefined => {
     const v = state.versions.findLastIndex((e) => e.position <= x);
@@ -477,7 +481,7 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
       const ml = config.maximumLifetime;
       if (req.start === undefined && ml !== undefined && entries[n - 1]!.timestamp - entries[root(n)]!.timestamp >= ml)
         throw new KTError(KTErrorCode.InvalidRequest);
-      const state = labelState(req.label);
+      const state = peekLabel(req.label);
       const p = prover(state, req.label, n, req.last);
       const { versions } = ownerInit(p, params, req.start, (_, x) => greatestAt(state, x));
       const greatestVersions = versions.filter((v) => v !== undefined);
@@ -501,7 +505,7 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
       const n = current.treeSize;
       checkLast(req.last, n);
       await authorize(Operation.OwnerMonitor, req.label, principal);
-      const state = labelState(req.label);
+      const state = peekLabel(req.label);
       const greatest = state.versions.findLastIndex((v) => v.position < n);
       const advertised = req.greatestVersion ?? -1;
       const atStart = req.start === undefined ? -1 : (greatestAt(state, req.start) ?? -1);
@@ -527,7 +531,7 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
       const req = decodeUpdateRequest(r);
       checkLast(req.last, current.treeSize);
       await authorize(Operation.Update, req.label, principal);
-      const state = labelState(req.label);
+      let state = peekLabel(req.label);
       const advertised = req.greatestVersion ?? -1;
       const known = state.versions.findLastIndex((v) => v.position < current.treeSize);
       if (advertised > known || (advertised === known && !req.values.length))
@@ -539,6 +543,7 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
       if (advertised < known) disregarded = true;
       else {
         await enqueue(undefined, () => insertVersions(req.label, req.values, req.greatestVersion ?? null));
+        state = peekLabel(req.label);
         at = head!;
       }
       const n = at.treeSize;

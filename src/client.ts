@@ -119,6 +119,12 @@ export interface Owner {
   readonly monitoring: readonly MonitorMapEntry[];
   /** VRF outputs and commitments for the ladders the owner verifies */
   readonly versions: readonly OwnedVersion[];
+  /**
+   * Greatest version known, or -1, when owner monitoring last stopped without
+   * verifying anything. The log then claims a version the owner does not know,
+   * which an update with no values must report.
+   */
+  readonly stalled?: number | undefined;
 }
 
 export interface UpdateResult {
@@ -395,6 +401,7 @@ export async function createClient(
       const name = toLabel(label);
       const checkpoint = checkCheckpoint(state.checkpoint, binding);
       if (start !== undefined && !isUint(start)) throw new KTError(KTErrorCode.InvalidRequest);
+      if (state.owner && !equalBytes(state.owner.label, name)) throw new KTError(KTErrorCode.InvalidState);
       const last = checkpoint?.treeSize;
       const bytes = await call(Operation.OwnerInit, encodeOwnerInitRequest({ last, label: name, start }), signal);
       try {
@@ -431,7 +438,15 @@ export async function createClient(
       const history = ownerHistory(owner);
       const before = history.greatest;
       const request = encodeUpdateRequest({ last, label: name, greatestVersion: before, values });
-      const bytes = await call(Operation.Update, request, signal);
+      let bytes: Uint8Array;
+      try {
+        bytes = await call(Operation.Update, request, signal);
+      } catch (e) {
+        // After owner monitoring stopped at an unknown version, the log must report it
+        if (!values.length && owner.stalled !== undefined && isKTError(e, KTErrorCode.InvalidRequest))
+          throw new KTError(KTErrorCode.InvalidResponse, { cause: e });
+        throw e;
+      }
       try {
         const res = decode(bytes, (r) => decodeUpdateResponse(r, vrf.proofLength));
         const n = treeSize(res.treeHead, last);
@@ -482,7 +497,12 @@ export async function createClient(
           monitoring = shrink(map, n);
         }
         const updated = retainOwner(
-          { ...owner, upcoming: [...owner.upcoming, ...created.map(() => res.position)], monitoring },
+          {
+            ...owner,
+            upcoming: [...owner.upcoming, ...created.map(() => res.position)],
+            monitoring,
+            stalled: undefined,
+          },
           data,
         );
         return {
@@ -527,7 +547,12 @@ export async function createClient(
         const view = { n, timestamp: (x: number) => ts.get(x)!, ladder: () => {} };
         const rightmost = rightmostDistinguished(view, config.reasonableMonitoringWindow);
         const done = rightmost === undefined || (moved.start !== undefined && moved.start >= rightmost);
-        return { state: { ...state, checkpoint: next, owner: retainOwner({ ...moved, monitoring }, data) }, done };
+        // Stopping twice without progress and without a new version to learn is a stall
+        const greatest = history.greatest ?? -1;
+        const stuck = verified === undefined && !done;
+        if (stuck && owner.stalled === greatest) throw new Error("the log keeps stopping owner monitoring");
+        const owned = retainOwner({ ...moved, monitoring, stalled: stuck ? greatest : undefined }, data);
+        return { state: { ...state, checkpoint: next, owner: owned }, done };
       } catch (e) {
         return fail(e);
       }
@@ -624,15 +649,23 @@ function checkOwner(o: Owner, binding: Uint8Array, label: Uint8Array): Owner {
     equalBytes(o.label, label) &&
     (o.start === undefined || isUint(o.start)) &&
     Array.isArray(o.previous) &&
+    (o.start === undefined ? o.previous.length === 0 : o.previous.length <= 1 + leftPath(o.start).length) &&
     o.previous.every((v, i, a) => isUint(v, MAX_VERSION) && (i === 0 || v <= a[i - 1]!)) &&
     Array.isArray(o.upcoming) &&
-    o.upcoming.every((p, i, a) => isUint(p) && (i === 0 || p >= a[i - 1]!)) &&
+    o.upcoming.every((p, i, a) => isUint(p) && (o.start === undefined || p > o.start) && (i === 0 || p >= a[i - 1]!)) &&
     Array.isArray(o.monitoring) &&
-    o.monitoring.every((e) => isUint(e.position) && isUint(e.version, MAX_VERSION)) &&
+    o.monitoring.every(
+      (e, i, a) =>
+        isUint(e.position) &&
+        isUint(e.version, MAX_VERSION) &&
+        (i === 0 || (a[i - 1]!.position < e.position && a.findIndex((x) => x.version === e.version) === i)),
+    ) &&
+    (o.stalled === undefined || (Number.isSafeInteger(o.stalled) && o.stalled >= -1)) &&
     Array.isArray(o.versions) &&
     o.versions.every(
-      (e) =>
+      (e, i, a) =>
         isUint(e.version, MAX_VERSION) &&
+        (i === 0 || a[i - 1]!.version < e.version) &&
         isBytes(e.vrfOutput, NH) &&
         (e.commitment === undefined || isBytes(e.commitment, NH)),
     );
