@@ -95,6 +95,31 @@ describe("search and monitor against an honest log", () => {
     expect(text((await client.search("alice", found.state)).value)).toBe("v1");
   });
 
+  test("monitoring survives revoked access, within the grant table's bound", async () => {
+    let open = true;
+    const w = await world({}, { authorize: () => open, limits: { maxGrants: 1 } });
+    const history = async (label: string) => {
+      await w.log.append({ label, value: bytes("v0"), expectedVersion: null });
+      w.clock.now += 10;
+      await w.log.tick();
+      w.clock.now += 10;
+      await w.log.append({ label, value: bytes("v1"), expectedVersion: 0 });
+    };
+    await history("alice");
+    const client = await w.client("bob");
+    const alice = await client.search("alice", client.initialState());
+    await history("carol");
+    expect(alice.state.contact.monitoring.length).toBeGreaterThan(0);
+    open = false;
+    await client.monitor("alice", alice.state);
+    // Finding another label evicts the only grant, so monitoring now needs authorization
+    open = true;
+    await client.search("carol", { checkpoint: alice.state.checkpoint });
+    open = false;
+    const denied = await client.monitor("alice", alice.state).catch((e) => e);
+    expect(isKTError(denied, KTErrorCode.Unauthorized)).toBe(true);
+  });
+
   test("reuses the advertised head when nothing changed", async () => {
     const w = await world();
     await w.log.append({ label: "alice", value: bytes("k"), expectedVersion: null });

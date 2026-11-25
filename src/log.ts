@@ -58,6 +58,12 @@ export interface Limits {
   readonly maxActiveReads: number;
   /** Queued `append`/`tick` calls before rejecting with Overloaded. */
   readonly maxPendingWrites: number;
+  /**
+   * Principals and labels whose found versions the log remembers, so Contact
+   * Monitor keeps working after access is revoked (Section 13.2). The least
+   * recently used are forgotten first, then fall back to `authorize`.
+   */
+  readonly maxGrants: number;
 }
 
 export interface LogOptions {
@@ -111,6 +117,7 @@ const DEFAULT_LIMITS: Limits = {
   maxValueBytes: 1 << 16,
   maxActiveReads: 64,
   maxPendingWrites: 64,
+  maxGrants: 100_000,
 };
 
 interface Version {
@@ -158,7 +165,8 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
   /** heads[k][i] is the head of the balanced subtree of size 2^k starting at i * 2^k. */
   const heads: Uint8Array[][] = [];
   const labels = new Map<string, LabelState>();
-  const grants = new Map<string, Set<string>>();
+  /** Greatest version each principal found for each label, oldest use first */
+  const grants = new Map<string, number>();
   let head: Head | undefined;
   let writes: Promise<unknown> = Promise.resolve();
   let pendingWrites = 0;
@@ -319,7 +327,16 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
       commitment: withCommitment(v) ? state.versions[v]!.commitment : undefined,
     }));
 
-  const grantKey = (label: Uint8Array, version: number) => `${bytesToHex(label)}:${version}`;
+  const grantKey = (principal: string, label: Uint8Array) => JSON.stringify([principal, bytesToHex(label)]);
+
+  /** Remembers that `principal` found `version`, evicting the least recently used grant past the limit */
+  function grant(principal: string, label: Uint8Array, version: number): void {
+    const key = grantKey(principal, label);
+    const known = grants.get(key) ?? -1;
+    grants.delete(key);
+    grants.set(key, Math.max(known, version));
+    if (grants.size > limits.maxGrants) grants.delete(grants.keys().next().value!);
+  }
 
   /** Checks a monitoring map against the rules of Sections 13.2 and 13.4 */
   function checkEntries(state: LabelState, entries: readonly MonitorMapEntry[], n: number, greatest: number): void {
@@ -372,9 +389,7 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
       const p = prover(state, req.label, n, req.last);
       if (req.version === undefined) greatestVersionSearch(p, params, t);
       else fixedVersionSearch(p, params, t);
-      let granted = grants.get(principal);
-      if (!granted) grants.set(principal, (granted = new Set()));
-      granted.add(grantKey(req.label, t));
+      grant(principal, req.label, t);
       const target = state.versions[t]!;
       return encodeSearchResponse(
         {
@@ -395,7 +410,10 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
       checkLast(req.last, n);
       if (!req.entries.length) throw new KTError(KTErrorCode.InvalidRequest);
       // Users keep monitoring versions they looked up even once access is revoked (Section 13.2)
-      const entitled = req.entries.every((e) => grants.get(principal)?.has(grantKey(req.label, e.version)));
+      // Versions up to the greatest one found are entitled: monitoring reveals no values
+      const found = grants.get(grantKey(principal, req.label)) ?? -1;
+      const entitled = req.entries.every((e) => e.version <= found);
+      if (entitled) grant(principal, req.label, found);
       if (!entitled) await authorize(Operation.ContactMonitor, req.label, principal);
       const { state, greatest } = lookup(req.label, n);
       checkEntries(state, req.entries, n, greatest);
