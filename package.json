@@ -34,7 +34,7 @@
     "test:browser": "vitest run --config vitest.browser.config.ts",
     "test:workers": "vitest run --config vitest.workers.config.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint && oxfmt --check",
+    "lint": "oxlint && oxfmt --check && shellcheck -o all bench/*.sh",
     "examples": "node examples/index.ts",
     "bench:memory": "node --expose-gc bench/memory.ts"
   },
