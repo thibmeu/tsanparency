@@ -204,7 +204,6 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
   const vrfOutput = (state: LabelState, label: Uint8Array, v: number) =>
     state.vrf.get(v)?.output ?? vrfOf(state, label, v).output;
 
-  /** Appends a log entry, signs it, then makes it visible. Rolls back on failure. */
   /** Adds a log entry's leaf and the balanced subtree heads it completes, and returns the new root */
   function grow(timestamp: number, tree: Node): Uint8Array {
     const n = entries.length;

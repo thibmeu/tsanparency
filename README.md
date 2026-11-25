@@ -33,6 +33,8 @@ const checked = await client.monitor("alice@example.com", found.state);
 
 Logs persist one record per entry through a `Store` (`memoryStore()` by default): implement `read` and an atomic `append` at a position to back it with a database. A log with a maximum lifetime drops the prefix trees of expired entries.
 
+To follow the log tree without a log, `appendLeaf(size, fullSubtrees, leaf)` folds one leaf value into the full subtree heads, and `rootFromFullSubtrees` gives the root.
+
 Verified state is plain data with numbers and `Uint8Array`s, so it survives structured clone and IndexedDB. Persist the new state before using a result: a response that fails verification never changes it.
 
 See [examples/index.ts](examples/index.ts) for a runnable version.
@@ -46,6 +48,7 @@ npm run test:workers  # workerd
 npm run bench:profile # self time by function
 npm run bench:trace   # CPU and heap profiles for speedscope or Chrome DevTools
 npm run bench:memory  # heap retained per log entry, with and without pruning
+node bench/compare.ts # VRF, append and search timings, or bench/workerd.sh for workerd
 ```
 
 ## License

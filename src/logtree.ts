@@ -39,6 +39,22 @@ export function rootFromFullSubtrees(n: number, heads: readonly Uint8Array[]): U
   return acc;
 }
 
+/**
+ * Full subtree heads of the tree with n + 1 leaves, from those of the tree with
+ * n leaves and the value of the new leaf. Keeps a log tree in O(log n) space.
+ */
+export function appendLeaf(n: number, heads: readonly Uint8Array[], leaf: Uint8Array): Uint8Array[] {
+  if (!Number.isSafeInteger(n) || n < 0 || heads.length !== fullSubtrees(n).length) {
+    throw new Error("heads do not match the tree size");
+  }
+  const out = heads.slice();
+  let value = leaf;
+  // Each trailing one bit of n is a balanced subtree the new leaf completes
+  for (let k = 0, i = n; i % 2 === 1; k++, i = (i - 1) / 2) value = logParent(out.pop()!, k === 0, value, k === 0);
+  out.push(value);
+  return out;
+}
+
 export interface Retained {
   readonly size: number;
   readonly heads: readonly Uint8Array[];

@@ -28,5 +28,6 @@ export {
   type Update,
   openLog,
 } from "./log.ts";
+export { appendLeaf, rootFromFullSubtrees } from "./logtree.ts";
 export type { MonitorMapEntry } from "./messages.ts";
 export { type Store, type StoredEntry, type StoredVersion, memoryStore } from "./store.ts";

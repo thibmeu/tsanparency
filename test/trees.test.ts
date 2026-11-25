@@ -5,7 +5,7 @@ import { describe, expect } from "vitest";
 import { logLeaf, logParent } from "../src/crypto.ts";
 import { ancestors, frontier, left, right, root } from "../src/ibst.ts";
 import { MAX_VERSION, baseLadder, monitoringLadder, searchLadder } from "../src/ladder.ts";
-import { computeRoot, fullSubtrees, rootFromFullSubtrees, type Range } from "../src/logtree.ts";
+import { appendLeaf, computeRoot, fullSubtrees, rootFromFullSubtrees, type Range } from "../src/logtree.ts";
 import { type Node, contains, evaluate, insert, prove, rootHash } from "../src/prefix.ts";
 
 /** Parent map of the implicit binary search tree, straight from Section 4.1's inductive definition. */
@@ -170,6 +170,19 @@ describe("log tree", () => {
     expect(proved.root).toEqual(rootFromFullSubtrees(n, expected));
     expect(verifyLog(n, known, retained, elements).root).toEqual(proved.root);
   });
+
+  test.prop([fc.integer({ min: 1, max: 70 })])(
+    "appending leaf values one by one yields the full subtree heads",
+    (n) => {
+      const all = heads(n);
+      let full: Uint8Array[] = [];
+      for (let i = 0; i < n; i++) {
+        full = appendLeaf(i, full, all.get(`${i}:1`)!);
+        expect(full).toEqual(fullSubtrees(i + 1).map((r) => all.get(key(r))!));
+      }
+      expect(() => appendLeaf(n, [...full, full[0]!], full[0]!)).toThrow();
+    },
+  );
 
   test.prop([logCase, fc.nat(), fc.integer({ min: 0, max: 255 })])(
     "tampered elements, leaves or retained heads change the root or fail",
