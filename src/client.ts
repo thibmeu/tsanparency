@@ -435,6 +435,7 @@ export async function createClient(
       try {
         const res = decode(bytes, (r) => decodeUpdateResponse(r, vrf.proofLength));
         const n = treeSize(res.treeHead, last);
+        if (res.position >= n) throw new Error("update position is outside the tree");
         if (history.lastUpdate !== undefined && res.position <= history.lastUpdate)
           throw new Error("update is not right of the previous one");
         const disregarded = res.values.length > 0;

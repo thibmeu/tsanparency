@@ -226,7 +226,8 @@ export function contactMonitor(
     if (stop >= 0) list.length = stop + 1;
     // During owner monitoring, the second algorithm of Section 8.3 inspects that
     // final distinguished entry instead (Section 8.2, step 2.4)
-    if (stop >= 0 && owner && (owner.start === undefined || position >= owner.start)) list.length = stop;
+    const deferred = stop >= 0 && owner !== undefined && (owner.start === undefined || position >= owner.start);
+    if (deferred) list.length = stop;
     let at = position;
     for (const x of list) {
       const prior = original.get(x) ?? ladders.get(x);
@@ -246,6 +247,8 @@ export function contactMonitor(
       current.set(x, version);
       at = x;
     }
+    // Owner monitoring now covers the deferred distinguished entry, so this one is done
+    if (deferred && current.get(at) === version) current.delete(at);
   }
   return [...current]
     .filter(([x]) => !distinguished(x))
