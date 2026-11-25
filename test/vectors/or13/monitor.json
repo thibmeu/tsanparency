@@ -1,0 +1,1454 @@
+{
+  "primitive": "monitor",
+  "draft": "draft-ietf-keytrans-protocol-05 §13.2, §13.3, §13.4",
+  "generator": {
+    "impl": "katie",
+    "sha": "a2959a53b4d669467fd5eea8ac4da298c038f47c"
+  },
+  "cipher_suite": 2,
+  "notes": "Monitoring responses served by a real log. `operation` selects which: `contact` for §13.2, `owner-init` for §13.3, `owner-monitor` for §13.4. `entries` is the user's monitoring map — a position mapped to the version proven to exist there, which is the state a search leaves behind — and `start` is the rightmost distinguished entry an owner has verified. `response` is the encoded response, with the CombinedTreeProof's parts broken out. The proofs' element order comes from §12.3.4 through §12.3.6, which iterate the map from rightmost to leftmost rather than descending, so the timestamps arrive in descending position order.",
+  "cases": [
+    {
+      "name": "contact-one-version",
+      "input": {
+        "entries": [
+          {
+            "position": 5,
+            "version": 5
+          }
+        ],
+        "entry_timestamps": [
+          1792462192083,
+          1792462192083,
+          1792462192083,
+          1792462192083,
+          1792462192084,
+          1792462192084,
+          1792462192084
+        ],
+        "known_versions": [
+          {
+            "commitment": "ce0ebff48faac84254ddeb453294150e064aa9f463390247feddab57a8d258eb",
+            "version": 0,
+            "vrf_output": "fd9ecf918e3b2a80ad06e2474e7a43de9578e3a10e0e4211d7c907e27179a1e3"
+          },
+          {
+            "commitment": "fc8c7203c3ab1235f079381a5df2ba47cf99284792a7abb5414fd95d037f1473",
+            "version": 1,
+            "vrf_output": "a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7f"
+          },
+          {
+            "commitment": "bd51cc504e1da196e775ed6504e14145b29ab0600dfe1d53fc9d233927c5e5c8",
+            "version": 2,
+            "vrf_output": "49ac592e66e6cdf540930a2de58d345878986b1e337ee0aeb9d5c3730be70e45"
+          },
+          {
+            "commitment": "e114631c37895f5909103ec87f36e9ba3d59398863d52c15a77f8acd5eb62cd0",
+            "version": 3,
+            "vrf_output": "ef0582ede742f1d47079dad60b655a3e4bab73d2bf1da0b3d6db7a833f132fee"
+          },
+          {
+            "commitment": "fc0eeb546577ebeab36d408d7fd97151a45acb955804c91af51454953254e956",
+            "version": 4,
+            "vrf_output": "f9177f084968b05e8b34978d8f50108baad4083600b51f944dc54460e0d850ae"
+          },
+          {
+            "commitment": "14c93d81d4c690481fa60d799eba61979c79ec8a0304699befc444355e9376d1",
+            "version": 5,
+            "vrf_output": "8bae45f7cb557efa69cdfc5607df19343b91071c69818c06a124adec721d3ba8"
+          },
+          {
+            "version": 6,
+            "vrf_output": "599424025a070d0e48913585265a30210ffe3416005c77c2354094f14c6358a1"
+          },
+          {
+            "version": 7,
+            "vrf_output": "80e204b5356fa5a4e88a74d22763e8212b9e2882397e69aaf852a7010f23f672"
+          }
+        ],
+        "label": "616c696365406578616d706c652e636f6d",
+        "maximum_lifetime": 0,
+        "mode": 1,
+        "monitoring_window": 604800000,
+        "mutations": [
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d31"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d32"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d33"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d34"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d35"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d36"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d37"
+              }
+            ]
+          }
+        ],
+        "operation": "contact",
+        "signature_public_key": "e2fe2a39b7326642827d6d82d497622cd6c297fe78270eaa436b01f086b6f3cb",
+        "start": 0,
+        "vrf_public_key": "555f469c22188e90015bdd85b889678d459f86bdf8f7bd34971b10b9b3858609"
+      },
+      "expect": {
+        "full_tree_head": "02000000000000000700409ab1b9e77677529740914f8a5c1742380f7466ba3f5a48da65cbfbbaa52939930a50e2fab73ca356202389e71de656c26f38f06f1b76c2088d57382646cb4d0b",
+        "inclusion": [
+          "5d558bc9e71d0dc2908ed5d17fbafcea0a3cf607f05d51dd776ecc9b4966b13e",
+          "8237f9b47b1934dae0ab418ad9c3ed9600f34c175c1c75f6a20bda44223b4e0e",
+          "ffe410e4f1a8fd3aadf4aec9320dc9a5f143361f6aa63089801aeffbb0c84d72"
+        ],
+        "prefix_proofs": [],
+        "prefix_roots": [
+          "251fc801906c15077a8db4cb8156eb0546de24bb2fb4d4c309757439ee1ae7b7",
+          "31ed5959b948f8d5e3327aeb5c6f662b7a2f4494893a0413e4f02cc2236524a9",
+          "dd8e5fe4ba0141332fc57963920616a6fc8e9bc3e3f6e5082875960a8342c560"
+        ],
+        "response": "02000000000000000700409ab1b9e77677529740914f8a5c1742380f7466ba3f5a48da65cbfbbaa52939930a50e2fab73ca356202389e71de656c26f38f06f1b76c2088d57382646cb4d0b03000001a157127dd3000001a157127dd4000001a157127dd40003251fc801906c15077a8db4cb8156eb0546de24bb2fb4d4c309757439ee1ae7b731ed5959b948f8d5e3327aeb5c6f662b7a2f4494893a0413e4f02cc2236524a9dd8e5fe4ba0141332fc57963920616a6fc8e9bc3e3f6e5082875960a8342c56000035d558bc9e71d0dc2908ed5d17fbafcea0a3cf607f05d51dd776ecc9b4966b13e8237f9b47b1934dae0ab418ad9c3ed9600f34c175c1c75f6a20bda44223b4e0effe410e4f1a8fd3aadf4aec9320dc9a5f143361f6aa63089801aeffbb0c84d72",
+        "timestamps": [
+          1792462192083,
+          1792462192084,
+          1792462192084
+        ],
+        "tree_size": 7
+      }
+    },
+    {
+      "name": "contact-inspects-an-ancestor",
+      "input": {
+        "entries": [
+          {
+            "position": 2,
+            "version": 2
+          }
+        ],
+        "entry_timestamps": [
+          1792462192090,
+          1792462192090,
+          1792462192090,
+          1792462192090,
+          1792462192090,
+          1792462192091,
+          1792462192091
+        ],
+        "known_versions": [
+          {
+            "commitment": "1994fe2357a9eeb1816ef59d1c36b414ebffcb6cddfa273ef7d9e6351c3eeaac",
+            "version": 0,
+            "vrf_output": "fd9ecf918e3b2a80ad06e2474e7a43de9578e3a10e0e4211d7c907e27179a1e3"
+          },
+          {
+            "commitment": "d960a9beb201a582cdf2c701f6ce86a9ca0b89396a46f57220af257aa2fb5665",
+            "version": 1,
+            "vrf_output": "a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7f"
+          },
+          {
+            "commitment": "d7f196369d6cdda859e0bd8ac7059b98224317789381f1a588f1fecf415a03b8",
+            "version": 2,
+            "vrf_output": "49ac592e66e6cdf540930a2de58d345878986b1e337ee0aeb9d5c3730be70e45"
+          },
+          {
+            "version": 3,
+            "vrf_output": "ef0582ede742f1d47079dad60b655a3e4bab73d2bf1da0b3d6db7a833f132fee"
+          }
+        ],
+        "label": "616c696365406578616d706c652e636f6d",
+        "maximum_lifetime": 0,
+        "mode": 1,
+        "monitoring_window": 604800000,
+        "mutations": [
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d31"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d32"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d33"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d34"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d35"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d36"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d37"
+              }
+            ]
+          }
+        ],
+        "operation": "contact",
+        "signature_public_key": "e2fe2a39b7326642827d6d82d497622cd6c297fe78270eaa436b01f086b6f3cb",
+        "start": 0,
+        "vrf_public_key": "555f469c22188e90015bdd85b889678d459f86bdf8f7bd34971b10b9b3858609"
+      },
+      "expect": {
+        "full_tree_head": "02000000000000000700401229205f22d2fa394d625f847023dafe79a462d06ec08df8c7967d15ed9087ba7b497bde741b6cbe62fd3291789094da5082ab3e6daa25e666739ad0c5e58a0c",
+        "inclusion": [
+          "0cf33909c273f70d6b5bfd6249c37df6f2b957b5d015f70419732bb89a3d5693",
+          "682ef12badbcc423b20ee33bc5c5de1ea1a5782c5faf0e911a7a3bbe790a7172",
+          "8f6c888b499af062f855506dbe4a669c34aaabc921e81afea6b0c81e7ad55b23"
+        ],
+        "prefix_proofs": [
+          {
+            "elements": [
+              "0000000000000000000000000000000000000000000000000000000000000000",
+              "789524d44116ddce7e9067a3f96189b608788f4ec95bb9aaa1fe3c48c1da9ee6"
+            ],
+            "encoding": "00000003010401020101000000020000000000000000000000000000000000000000000000000000000000000000789524d44116ddce7e9067a3f96189b608788f4ec95bb9aaa1fe3c48c1da9ee6",
+            "results": [
+              {
+                "depth": 4,
+                "result_type": 1
+              },
+              {
+                "depth": 2,
+                "result_type": 1
+              },
+              {
+                "depth": 1,
+                "result_type": 1
+              }
+            ]
+          }
+        ],
+        "prefix_roots": [
+          "793f08fe5ba99ac36fae03bdb0698fca155c529f4b96650fda9ee8c162418f39",
+          "b3b2bc2d2567c037bc5f43a9f88b9313904c47a14f14c18b52448ff9090fad63",
+          "6d846790dbf31d0e1d4bc1a8ec20e72f13139701f79b1e7fa5e4113952c923b7"
+        ],
+        "response": "02000000000000000700401229205f22d2fa394d625f847023dafe79a462d06ec08df8c7967d15ed9087ba7b497bde741b6cbe62fd3291789094da5082ab3e6daa25e666739ad0c5e58a0c04000001a157127dda000001a157127ddb000001a157127ddb000001a157127dda0100000003010401020101000000020000000000000000000000000000000000000000000000000000000000000000789524d44116ddce7e9067a3f96189b608788f4ec95bb9aaa1fe3c48c1da9ee603793f08fe5ba99ac36fae03bdb0698fca155c529f4b96650fda9ee8c162418f39b3b2bc2d2567c037bc5f43a9f88b9313904c47a14f14c18b52448ff9090fad636d846790dbf31d0e1d4bc1a8ec20e72f13139701f79b1e7fa5e4113952c923b700030cf33909c273f70d6b5bfd6249c37df6f2b957b5d015f70419732bb89a3d5693682ef12badbcc423b20ee33bc5c5de1ea1a5782c5faf0e911a7a3bbe790a71728f6c888b499af062f855506dbe4a669c34aaabc921e81afea6b0c81e7ad55b23",
+        "timestamps": [
+          1792462192090,
+          1792462192091,
+          1792462192091,
+          1792462192090
+        ],
+        "tree_size": 7
+      }
+    },
+    {
+      "name": "contact-distinguished-map-entry",
+      "input": {
+        "entries": [
+          {
+            "position": 5,
+            "version": 5
+          }
+        ],
+        "entry_timestamps": [
+          1792462192094,
+          1792462192195,
+          1792462192296,
+          1792462192399,
+          1792462192501,
+          1792462192602,
+          1792462192704
+        ],
+        "known_versions": [
+          {
+            "commitment": "6d18e89edd2021f527553ba598487c6f954c176904a4e69801ea660b0d02c201",
+            "version": 0,
+            "vrf_output": "fd9ecf918e3b2a80ad06e2474e7a43de9578e3a10e0e4211d7c907e27179a1e3"
+          },
+          {
+            "commitment": "5c87ca3e050d31aeb0d4e85b122498b26bc6817f9587d05602d7119fbdc527e2",
+            "version": 1,
+            "vrf_output": "a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7f"
+          },
+          {
+            "commitment": "5cb4c83f4d7547e94ed56ac296479570572fc5a4d44ca53caa388ba3c886def8",
+            "version": 2,
+            "vrf_output": "49ac592e66e6cdf540930a2de58d345878986b1e337ee0aeb9d5c3730be70e45"
+          },
+          {
+            "commitment": "855c41687e761286271b36fb0374bfa3baed89cbf9a4f5b1e9fbcecfe6269694",
+            "version": 3,
+            "vrf_output": "ef0582ede742f1d47079dad60b655a3e4bab73d2bf1da0b3d6db7a833f132fee"
+          },
+          {
+            "commitment": "b6c86df5d4408498bf4076559cbc1584d887d8abf0f373d9ef60b5db8fdb38bf",
+            "version": 4,
+            "vrf_output": "f9177f084968b05e8b34978d8f50108baad4083600b51f944dc54460e0d850ae"
+          },
+          {
+            "commitment": "71c9d8929c7f04c56c3676e51334a30583ab4ff1f10cdd9f007ba2b9c6e4232c",
+            "version": 5,
+            "vrf_output": "8bae45f7cb557efa69cdfc5607df19343b91071c69818c06a124adec721d3ba8"
+          },
+          {
+            "version": 6,
+            "vrf_output": "599424025a070d0e48913585265a30210ffe3416005c77c2354094f14c6358a1"
+          },
+          {
+            "version": 7,
+            "vrf_output": "80e204b5356fa5a4e88a74d22763e8212b9e2882397e69aaf852a7010f23f672"
+          }
+        ],
+        "label": "616c696365406578616d706c652e636f6d",
+        "maximum_lifetime": 0,
+        "mode": 1,
+        "monitoring_window": 50,
+        "mutations": [
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d31"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d32"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d33"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d34"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d35"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d36"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d37"
+              }
+            ]
+          }
+        ],
+        "operation": "contact",
+        "signature_public_key": "e2fe2a39b7326642827d6d82d497622cd6c297fe78270eaa436b01f086b6f3cb",
+        "start": 0,
+        "vrf_public_key": "555f469c22188e90015bdd85b889678d459f86bdf8f7bd34971b10b9b3858609"
+      },
+      "expect": {
+        "full_tree_head": "0200000000000000070040563ca28f602e3b31d3f78095a92cbf39aa53dfb29722106375d5e9ebfc826dbd298682fed92be8364572b2a8d350d5a096d3c388f1da14033ec13867fdd0f30f",
+        "inclusion": [
+          "905f5f63f0b0de73858554d5dc3ee347a93e1ebd172e6f95cb856f9a99e14628",
+          "d3ba7da7afcbf6024aeca01890fcf10c0a878f9fa0c7bfa8750f10ffad17ebcf",
+          "9d61417efbd36c438471c5ebda13f326d20c3e4aeae27b733da68d3ea58f5e64"
+        ],
+        "prefix_proofs": [],
+        "prefix_roots": [
+          "25a617265a6d26775891f06614963a03c3497ada52ad7231b57ce91c3e5b924d",
+          "335b871df390de9e40eedc94ff0c1981d0ad3e9f15f97b853fa199521e0f7398",
+          "558070f630a9e890f11c1a6bbfbca82ec0f69eedcc89b7c4b962d5e72ad784b6"
+        ],
+        "response": "0200000000000000070040563ca28f602e3b31d3f78095a92cbf39aa53dfb29722106375d5e9ebfc826dbd298682fed92be8364572b2a8d350d5a096d3c388f1da14033ec13867fdd0f30f03000001a157127f0f000001a157127fda000001a157128040000325a617265a6d26775891f06614963a03c3497ada52ad7231b57ce91c3e5b924d335b871df390de9e40eedc94ff0c1981d0ad3e9f15f97b853fa199521e0f7398558070f630a9e890f11c1a6bbfbca82ec0f69eedcc89b7c4b962d5e72ad784b60003905f5f63f0b0de73858554d5dc3ee347a93e1ebd172e6f95cb856f9a99e14628d3ba7da7afcbf6024aeca01890fcf10c0a878f9fa0c7bfa8750f10ffad17ebcf9d61417efbd36c438471c5ebda13f326d20c3e4aeae27b733da68d3ea58f5e64",
+        "timestamps": [
+          1792462192399,
+          1792462192602,
+          1792462192704
+        ],
+        "tree_size": 7
+      }
+    },
+    {
+      "name": "contact-two-versions",
+      "input": {
+        "entries": [
+          {
+            "position": 4,
+            "version": 4
+          },
+          {
+            "position": 6,
+            "version": 6
+          }
+        ],
+        "entry_timestamps": [
+          1792462192715,
+          1792462192716,
+          1792462192716,
+          1792462192716,
+          1792462192716,
+          1792462192716,
+          1792462192717
+        ],
+        "known_versions": [
+          {
+            "commitment": "dfc6eb1a7b907f15ba88b415087539e624923c6547af0c808eafc69a79db24ee",
+            "version": 0,
+            "vrf_output": "fd9ecf918e3b2a80ad06e2474e7a43de9578e3a10e0e4211d7c907e27179a1e3"
+          },
+          {
+            "commitment": "81aa22c16cf2b8685bde60c642a9881a7b732c25562e903e846f0751e83002cf",
+            "version": 1,
+            "vrf_output": "a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7f"
+          },
+          {
+            "commitment": "609b35f51b04f9797c5aea9a4ad02cb6eeeaa0e32264d6b25782b7e49ef39dc8",
+            "version": 2,
+            "vrf_output": "49ac592e66e6cdf540930a2de58d345878986b1e337ee0aeb9d5c3730be70e45"
+          },
+          {
+            "commitment": "cd59ffcbba8849b9a927aaab4ce18a81214abb6715a07fd121155e49dfbd83c5",
+            "version": 3,
+            "vrf_output": "ef0582ede742f1d47079dad60b655a3e4bab73d2bf1da0b3d6db7a833f132fee"
+          },
+          {
+            "commitment": "e43610bd3305a1050ff6cb55e195c47c48ae6695e81296eeac1ea1be8a0248d5",
+            "version": 4,
+            "vrf_output": "f9177f084968b05e8b34978d8f50108baad4083600b51f944dc54460e0d850ae"
+          },
+          {
+            "commitment": "7c42fa658d099c9501f2ff2407c2712be088cd33151b73857aac1b3b83570f7e",
+            "version": 5,
+            "vrf_output": "8bae45f7cb557efa69cdfc5607df19343b91071c69818c06a124adec721d3ba8"
+          },
+          {
+            "commitment": "f8407f140e885280aa6953283ac1c252fb3bb86df68344a2fdc9a89b9da1aae1",
+            "version": 6,
+            "vrf_output": "599424025a070d0e48913585265a30210ffe3416005c77c2354094f14c6358a1"
+          },
+          {
+            "version": 7,
+            "vrf_output": "80e204b5356fa5a4e88a74d22763e8212b9e2882397e69aaf852a7010f23f672"
+          }
+        ],
+        "label": "616c696365406578616d706c652e636f6d",
+        "maximum_lifetime": 0,
+        "mode": 1,
+        "monitoring_window": 604800000,
+        "mutations": [
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d31"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d32"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d33"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d34"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d35"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d36"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d37"
+              }
+            ]
+          }
+        ],
+        "operation": "contact",
+        "signature_public_key": "e2fe2a39b7326642827d6d82d497622cd6c297fe78270eaa436b01f086b6f3cb",
+        "start": 0,
+        "vrf_public_key": "555f469c22188e90015bdd85b889678d459f86bdf8f7bd34971b10b9b3858609"
+      },
+      "expect": {
+        "full_tree_head": "0200000000000000070040cd5a0f4022b63e58def3778d29a57fa3db9182ef3d4f5b3d289b8a1dfd42786256a911e73f966fa8442b8b4a9346ffb5965c03bd81905aa121d82c7812c6ab07",
+        "inclusion": [
+          "d3c03f0f753b549be2d4d95ffa2702614f5884fe30e3799c3419cf829e0c033d",
+          "7a5014a482eb77f58a4816f2fd32e6c76317731b7a5a568061a97477e9186b04",
+          "85831ff3da5af18d97b386411e9aefc9e6701e8f59ebdc44933f774b0fb77cd7"
+        ],
+        "prefix_proofs": [
+          {
+            "elements": [
+              "3db9d8f0515e6550ddc39193cfd52ec33b3b3594b699cf74584ffcc81f748beb",
+              "c51ad75fb2607d4e5b5e515e22eff613d46e696fbe9e83c82410552b8078404e",
+              "0000000000000000000000000000000000000000000000000000000000000000",
+              "0000000000000000000000000000000000000000000000000000000000000000"
+            ],
+            "encoding": "000000040106010301040106000000043db9d8f0515e6550ddc39193cfd52ec33b3b3594b699cf74584ffcc81f748bebc51ad75fb2607d4e5b5e515e22eff613d46e696fbe9e83c82410552b8078404e00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+            "results": [
+              {
+                "depth": 6,
+                "result_type": 1
+              },
+              {
+                "depth": 3,
+                "result_type": 1
+              },
+              {
+                "depth": 4,
+                "result_type": 1
+              },
+              {
+                "depth": 6,
+                "result_type": 1
+              }
+            ]
+          }
+        ],
+        "prefix_roots": [
+          "8a262dcfc0ce9684541c9d02ba0a3bb5be4f7ef33f15d7968c2d5f9d93763c2b",
+          "b012d66150133d258531bdb310668363b07bf6fdec3c54d22518fa433a80c6e1"
+        ],
+        "response": "0200000000000000070040cd5a0f4022b63e58def3778d29a57fa3db9182ef3d4f5b3d289b8a1dfd42786256a911e73f966fa8442b8b4a9346ffb5965c03bd81905aa121d82c7812c6ab0703000001a15712804c000001a15712804c000001a15712804d01000000040106010301040106000000043db9d8f0515e6550ddc39193cfd52ec33b3b3594b699cf74584ffcc81f748bebc51ad75fb2607d4e5b5e515e22eff613d46e696fbe9e83c82410552b8078404e00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000028a262dcfc0ce9684541c9d02ba0a3bb5be4f7ef33f15d7968c2d5f9d93763c2bb012d66150133d258531bdb310668363b07bf6fdec3c54d22518fa433a80c6e10003d3c03f0f753b549be2d4d95ffa2702614f5884fe30e3799c3419cf829e0c033d7a5014a482eb77f58a4816f2fd32e6c76317731b7a5a568061a97477e9186b0485831ff3da5af18d97b386411e9aefc9e6701e8f59ebdc44933f774b0fb77cd7",
+        "timestamps": [
+          1792462192716,
+          1792462192716,
+          1792462192717
+        ],
+        "tree_size": 7
+      }
+    },
+    {
+      "name": "contact-with-advertised-size",
+      "input": {
+        "entries": [
+          {
+            "position": 5,
+            "version": 5
+          }
+        ],
+        "entry_timestamps": [
+          1792462192724,
+          1792462192724,
+          1792462192724,
+          1792462192724,
+          1792462192725,
+          1792462192725,
+          1792462192725
+        ],
+        "known_versions": [
+          {
+            "commitment": "69b93d556b6b3ff78b3d2b47af91128dab6b2b64f9ee30d619b4b326e2eaafef",
+            "version": 0,
+            "vrf_output": "fd9ecf918e3b2a80ad06e2474e7a43de9578e3a10e0e4211d7c907e27179a1e3"
+          },
+          {
+            "commitment": "401976f2d2644e9649c51ff9dc3a62ea28f3c1ee58da4cb7f82e9af2381bd6ef",
+            "version": 1,
+            "vrf_output": "a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7f"
+          },
+          {
+            "commitment": "795e46f17fe77fd40b378b11ecf8ed67b276c6ddbb286c9d9567afb54fc03be8",
+            "version": 2,
+            "vrf_output": "49ac592e66e6cdf540930a2de58d345878986b1e337ee0aeb9d5c3730be70e45"
+          },
+          {
+            "commitment": "2d22b3d803ebb273813208c04c67192e40c621311076fb740a14cd6d4901be85",
+            "version": 3,
+            "vrf_output": "ef0582ede742f1d47079dad60b655a3e4bab73d2bf1da0b3d6db7a833f132fee"
+          },
+          {
+            "commitment": "f4534c1ffc02437b721c3a7c426483240702be088e8d43ab8340f9b5c7e9b82f",
+            "version": 4,
+            "vrf_output": "f9177f084968b05e8b34978d8f50108baad4083600b51f944dc54460e0d850ae"
+          },
+          {
+            "commitment": "ea9b89f5373b24e7ee0d5a1c8ac4574339c55b7456846c515380c1103f3c28ab",
+            "version": 5,
+            "vrf_output": "8bae45f7cb557efa69cdfc5607df19343b91071c69818c06a124adec721d3ba8"
+          },
+          {
+            "version": 6,
+            "vrf_output": "599424025a070d0e48913585265a30210ffe3416005c77c2354094f14c6358a1"
+          },
+          {
+            "version": 7,
+            "vrf_output": "80e204b5356fa5a4e88a74d22763e8212b9e2882397e69aaf852a7010f23f672"
+          }
+        ],
+        "label": "616c696365406578616d706c652e636f6d",
+        "last": 6,
+        "maximum_lifetime": 0,
+        "mode": 1,
+        "monitoring_window": 604800000,
+        "mutations": [
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d31"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d32"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d33"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d34"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d35"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d36"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d37"
+              }
+            ]
+          }
+        ],
+        "operation": "contact",
+        "signature_public_key": "e2fe2a39b7326642827d6d82d497622cd6c297fe78270eaa436b01f086b6f3cb",
+        "start": 0,
+        "vrf_public_key": "555f469c22188e90015bdd85b889678d459f86bdf8f7bd34971b10b9b3858609"
+      },
+      "expect": {
+        "full_tree_head": "02000000000000000700401e5bf730d2a0cf647e6c01b066d01b4e5fefb271e7b0e65b8d864b175fce42f11f02988555bdd6f50796d0479179688a0e663b70ddafc1bddcc089146b2c200f",
+        "inclusion": [],
+        "prefix_proofs": [],
+        "prefix_roots": [
+          "7ef82a93d632b117ea693f844c93be7f908b7b4051e9f1b9adeee4d3ad762839"
+        ],
+        "response": "02000000000000000700401e5bf730d2a0cf647e6c01b066d01b4e5fefb271e7b0e65b8d864b175fce42f11f02988555bdd6f50796d0479179688a0e663b70ddafc1bddcc089146b2c200f01000001a15712805500017ef82a93d632b117ea693f844c93be7f908b7b4051e9f1b9adeee4d3ad7628390000",
+        "timestamps": [
+          1792462192725
+        ],
+        "tree_size": 7
+      }
+    },
+    {
+      "name": "owner-init",
+      "input": {
+        "entries": [],
+        "entry_timestamps": [
+          1792462192731,
+          1792462192731,
+          1792462192731,
+          1792462192731,
+          1792462192731,
+          1792462192732,
+          1792462192732
+        ],
+        "known_versions": [
+          {
+            "commitment": "0b27b2515872623bc849f48b989a3b7bb09c799deeacf6ededb5b9fd6fa9557c",
+            "version": 0,
+            "vrf_output": "fd9ecf918e3b2a80ad06e2474e7a43de9578e3a10e0e4211d7c907e27179a1e3"
+          },
+          {
+            "version": 1,
+            "vrf_output": "a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7f"
+          }
+        ],
+        "label": "616c696365406578616d706c652e636f6d",
+        "maximum_lifetime": 0,
+        "mode": 1,
+        "monitoring_window": 604800000,
+        "mutations": [
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d31"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d32"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d33"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d34"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d35"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d36"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d37"
+              }
+            ]
+          }
+        ],
+        "operation": "owner-init",
+        "signature_public_key": "e2fe2a39b7326642827d6d82d497622cd6c297fe78270eaa436b01f086b6f3cb",
+        "start": 3,
+        "vrf_public_key": "555f469c22188e90015bdd85b889678d459f86bdf8f7bd34971b10b9b3858609"
+      },
+      "expect": {
+        "binary_ladder": [
+          {
+            "commitment": "0b27b2515872623bc849f48b989a3b7bb09c799deeacf6ededb5b9fd6fa9557c",
+            "proof": "f73cf4600d657de46b1c253865fb864c21c61d2f953e0de8783551a320a6ead8db24ada8c88dc61ef91918546bfbcf7a368978fa3fd0be323df12dd9e33158b6030f85a1626f67b9ce76824925638f00"
+          },
+          {
+            "commitment": "3743be1c64c0040b36a6d4d458a2b76fca967a6641dae0fbfd9d0988b351c6a9",
+            "proof": "414bf5100e0e7375962137f3033ad5f665473dc0ef92ae6ee72bc707a4823f18b1ada9796df18a84c12362f3b0c62d3de28c2225f21bcad3800f653155c2b53c174111c6b7b441301e95ad238c2edf02"
+          },
+          {
+            "commitment": "d2af7bea35747b7c4ee4c1d9ee4805cb8115ddc0ccbfa3e2364664aa13db0bd3",
+            "proof": "783c97f3a538e3b5efd329babbfd1b04779837fe3bc02ef1853f1a5c230c9fba2ff677633ff6a6fec42460a0544fa203fd64e801091419ada272aabff336e6be2b78ca81ad48ba56b279a340ace4f90c"
+          },
+          {
+            "proof": "901738f65e8b0d720acdb242304a8725f8ca1acbb009fbd89c72016887f57fd6d75db48330615e002cec7257a9620a57bd2679cafe860c43c92d86e7751ff5fa38ff87f334f665233fb88fe5d60f240e"
+          },
+          {
+            "proof": "e8064efcdf44e6573edc6fdfb948d4d36439d9e825e1e2d4b8b6ceddb5780bf5cb1207e328983ca5b32ff580ad6a1c96b080d6ee0290932ddb84ff37db88380cd470f7dddbf4e7dda6cc76c74592f603"
+          },
+          {
+            "proof": "26fa91c612726fab2892d9d4bd0f73d52f623d1e536dd405e66fb3fb6c5cb157ac15cffa6eb16f43f72685f8f9b641d097435b4df6f5e3173987f2cec4d7c7506d20083e4c1037957595afa23e123409"
+          }
+        ],
+        "full_tree_head": "02000000000000000700404ca059f43724bbf15c2c4226c12ef632b4383002c760b736059179b2d3619f9201da5947a475de0776a99e1466245237800783f64275c989098dc7a62b842809",
+        "greatest_versions": [
+          3
+        ],
+        "inclusion": [
+          "ee27ca06772c479ec50724b4abb852a39d0963fc99ab57431c8777f58f1f934b",
+          "7c07087005a0b4302e464192e0626ddb16d46d5c3189cf3ecc2dc26a9403335c",
+          "fe45dfd0a061c0aa39eee6879dc1034f35fb90f9aa4af3cca106a843cbb818e8"
+        ],
+        "prefix_proofs": [
+          {
+            "elements": [
+              "22d04dbcc3246bb049046f185264ef22839dd671d059f87f591b30164760abb4",
+              "0000000000000000000000000000000000000000000000000000000000000000"
+            ],
+            "encoding": "0000000601040102010402a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7f3743be1c64c0040b36a6d4d458a2b76fca967a6641dae0fbfd9d0988b351c6a90202a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7f3743be1c64c0040b36a6d4d458a2b76fca967a6641dae0fbfd9d0988b351c6a90202fd9ecf918e3b2a80ad06e2474e7a43de9578e3a10e0e4211d7c907e27179a1e30b27b2515872623bc849f48b989a3b7bb09c799deeacf6ededb5b9fd6fa9557c040000000222d04dbcc3246bb049046f185264ef22839dd671d059f87f591b30164760abb40000000000000000000000000000000000000000000000000000000000000000",
+            "results": [
+              {
+                "depth": 4,
+                "result_type": 1
+              },
+              {
+                "depth": 2,
+                "result_type": 1
+              },
+              {
+                "depth": 4,
+                "result_type": 1
+              },
+              {
+                "depth": 2,
+                "leaf": {
+                  "commitment": "3743be1c64c0040b36a6d4d458a2b76fca967a6641dae0fbfd9d0988b351c6a9",
+                  "vrf_output": "a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7f"
+                },
+                "result_type": 2
+              },
+              {
+                "depth": 2,
+                "leaf": {
+                  "commitment": "3743be1c64c0040b36a6d4d458a2b76fca967a6641dae0fbfd9d0988b351c6a9",
+                  "vrf_output": "a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7f"
+                },
+                "result_type": 2
+              },
+              {
+                "depth": 4,
+                "leaf": {
+                  "commitment": "0b27b2515872623bc849f48b989a3b7bb09c799deeacf6ededb5b9fd6fa9557c",
+                  "vrf_output": "fd9ecf918e3b2a80ad06e2474e7a43de9578e3a10e0e4211d7c907e27179a1e3"
+                },
+                "result_type": 2
+              }
+            ]
+          }
+        ],
+        "prefix_roots": [
+          "ecd2c5d4a2eba5b5529220f2efe0ca3a848ef34b9c1d561d9c48633ea24e6c85",
+          "1cd12b07d8057950f95ef481464988cdc06deefaa3e84326dce770f6c689642c"
+        ],
+        "response": "02000000000000000700404ca059f43724bbf15c2c4226c12ef632b4383002c760b736059179b2d3619f9201da5947a475de0776a99e1466245237800783f64275c989098dc7a62b84280901000000030006f73cf4600d657de46b1c253865fb864c21c61d2f953e0de8783551a320a6ead8db24ada8c88dc61ef91918546bfbcf7a368978fa3fd0be323df12dd9e33158b6030f85a1626f67b9ce76824925638f00010b27b2515872623bc849f48b989a3b7bb09c799deeacf6ededb5b9fd6fa9557c414bf5100e0e7375962137f3033ad5f665473dc0ef92ae6ee72bc707a4823f18b1ada9796df18a84c12362f3b0c62d3de28c2225f21bcad3800f653155c2b53c174111c6b7b441301e95ad238c2edf02013743be1c64c0040b36a6d4d458a2b76fca967a6641dae0fbfd9d0988b351c6a9783c97f3a538e3b5efd329babbfd1b04779837fe3bc02ef1853f1a5c230c9fba2ff677633ff6a6fec42460a0544fa203fd64e801091419ada272aabff336e6be2b78ca81ad48ba56b279a340ace4f90c01d2af7bea35747b7c4ee4c1d9ee4805cb8115ddc0ccbfa3e2364664aa13db0bd3901738f65e8b0d720acdb242304a8725f8ca1acbb009fbd89c72016887f57fd6d75db48330615e002cec7257a9620a57bd2679cafe860c43c92d86e7751ff5fa38ff87f334f665233fb88fe5d60f240e00e8064efcdf44e6573edc6fdfb948d4d36439d9e825e1e2d4b8b6ceddb5780bf5cb1207e328983ca5b32ff580ad6a1c96b080d6ee0290932ddb84ff37db88380cd470f7dddbf4e7dda6cc76c74592f6030026fa91c612726fab2892d9d4bd0f73d52f623d1e536dd405e66fb3fb6c5cb157ac15cffa6eb16f43f72685f8f9b641d097435b4df6f5e3173987f2cec4d7c7506d20083e4c1037957595afa23e1234090003000001a15712805b000001a15712805c000001a15712805c010000000601040102010402a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7f3743be1c64c0040b36a6d4d458a2b76fca967a6641dae0fbfd9d0988b351c6a90202a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7f3743be1c64c0040b36a6d4d458a2b76fca967a6641dae0fbfd9d0988b351c6a90202fd9ecf918e3b2a80ad06e2474e7a43de9578e3a10e0e4211d7c907e27179a1e30b27b2515872623bc849f48b989a3b7bb09c799deeacf6ededb5b9fd6fa9557c040000000222d04dbcc3246bb049046f185264ef22839dd671d059f87f591b30164760abb4000000000000000000000000000000000000000000000000000000000000000002ecd2c5d4a2eba5b5529220f2efe0ca3a848ef34b9c1d561d9c48633ea24e6c851cd12b07d8057950f95ef481464988cdc06deefaa3e84326dce770f6c689642c0003ee27ca06772c479ec50724b4abb852a39d0963fc99ab57431c8777f58f1f934b7c07087005a0b4302e464192e0626ddb16d46d5c3189cf3ecc2dc26a9403335cfe45dfd0a061c0aa39eee6879dc1034f35fb90f9aa4af3cca106a843cbb818e8",
+        "timestamps": [
+          1792462192731,
+          1792462192732,
+          1792462192732
+        ],
+        "tree_size": 7
+      }
+    },
+    {
+      "name": "owner-monitor",
+      "input": {
+        "entries": [
+          {
+            "position": 5,
+            "version": 5
+          }
+        ],
+        "entry_timestamps": [
+          1792462192734,
+          1792462192735,
+          1792462192735,
+          1792462192736,
+          1792462192736,
+          1792462192736,
+          1792462192736
+        ],
+        "greatest_version": 6,
+        "known_versions": [
+          {
+            "commitment": "eb04c94bb7ffd7f0a89bd6c1da8aa26682f2193e478ef07ec9cc58cb7b9ee2a6",
+            "version": 0,
+            "vrf_output": "fd9ecf918e3b2a80ad06e2474e7a43de9578e3a10e0e4211d7c907e27179a1e3"
+          },
+          {
+            "commitment": "4ac7882a5504f53af7aff88b8285feabb7dfb16eb5170d87a509740759274502",
+            "version": 1,
+            "vrf_output": "a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7f"
+          },
+          {
+            "commitment": "1a8cf8a01863587f40ea2a6fc3bdab1fbfb59084d631329e0e12e00c0de8ae3b",
+            "version": 2,
+            "vrf_output": "49ac592e66e6cdf540930a2de58d345878986b1e337ee0aeb9d5c3730be70e45"
+          },
+          {
+            "commitment": "42853ae47371e1057f804844dff620a98476f275acd2b8e9fdec4ccbcd17366f",
+            "version": 3,
+            "vrf_output": "ef0582ede742f1d47079dad60b655a3e4bab73d2bf1da0b3d6db7a833f132fee"
+          },
+          {
+            "commitment": "df96a45126070d1fb25dba9a834c4d8a2fcea5b66e20407a6877da2878a2ece8",
+            "version": 4,
+            "vrf_output": "f9177f084968b05e8b34978d8f50108baad4083600b51f944dc54460e0d850ae"
+          },
+          {
+            "commitment": "d55a36087a8fc4f6b57b085062996ebcb85f104ab3fb19e44d2e9fa9e510a06e",
+            "version": 5,
+            "vrf_output": "8bae45f7cb557efa69cdfc5607df19343b91071c69818c06a124adec721d3ba8"
+          },
+          {
+            "commitment": "07f4639af50d38ef92f0bec072971ea6873f32d9d27abad585f141171099e244",
+            "version": 6,
+            "vrf_output": "599424025a070d0e48913585265a30210ffe3416005c77c2354094f14c6358a1"
+          },
+          {
+            "version": 7,
+            "vrf_output": "80e204b5356fa5a4e88a74d22763e8212b9e2882397e69aaf852a7010f23f672"
+          }
+        ],
+        "label": "616c696365406578616d706c652e636f6d",
+        "maximum_lifetime": 0,
+        "mode": 1,
+        "monitoring_window": 604800000,
+        "mutations": [
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d31"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d32"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d33"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d34"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d35"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d36"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d37"
+              }
+            ]
+          }
+        ],
+        "operation": "owner-monitor",
+        "signature_public_key": "e2fe2a39b7326642827d6d82d497622cd6c297fe78270eaa436b01f086b6f3cb",
+        "start": 3,
+        "vrf_public_key": "555f469c22188e90015bdd85b889678d459f86bdf8f7bd34971b10b9b3858609"
+      },
+      "expect": {
+        "full_tree_head": "0200000000000000070040b1d3fa257c11343c9a0396a62f7ddc3d4aa43c0c8999f3d39a50460b36a4ef86892bcd195bde9cf9abe147bb0e5b08540a74e7115bed2417fd92803531e0a402",
+        "inclusion": [
+          "3883668af6c0239f58e64b4eaceafdd948c881c5fd336200cb634f11fa52626b",
+          "b4ec159cd8cd3e48386a0b81edaf1ff93e5abb6476b8fd44b9f5c217a6cf32a4",
+          "465593fdb00f40d62eb7c2d0808a85442ae54dd4ce6a476ef329c7a0fec5f38b"
+        ],
+        "prefix_proofs": [],
+        "prefix_roots": [
+          "0b9fb26805c28d63af295cab221583e31e7ccaf8ee976a5ecbf1651b2880b57d",
+          "17c981c5063e3b92e6d34c570fd547add44e754648807fe18bad2a3ca3a42b4c",
+          "ea9d6d192c4f571deb691f85d54b040fa8018be739b30691e028c395a20bf32d"
+        ],
+        "response": "0200000000000000070040b1d3fa257c11343c9a0396a62f7ddc3d4aa43c0c8999f3d39a50460b36a4ef86892bcd195bde9cf9abe147bb0e5b08540a74e7115bed2417fd92803531e0a40203000001a157128060000001a157128060000001a15712806000030b9fb26805c28d63af295cab221583e31e7ccaf8ee976a5ecbf1651b2880b57d17c981c5063e3b92e6d34c570fd547add44e754648807fe18bad2a3ca3a42b4cea9d6d192c4f571deb691f85d54b040fa8018be739b30691e028c395a20bf32d00033883668af6c0239f58e64b4eaceafdd948c881c5fd336200cb634f11fa52626bb4ec159cd8cd3e48386a0b81edaf1ff93e5abb6476b8fd44b9f5c217a6cf32a4465593fdb00f40d62eb7c2d0808a85442ae54dd4ce6a476ef329c7a0fec5f38b",
+        "timestamps": [
+          1792462192736,
+          1792462192736,
+          1792462192736
+        ],
+        "tree_size": 7
+      }
+    },
+    {
+      "name": "owner-monitor-reaches-step-5",
+      "input": {
+        "entries": [
+          {
+            "position": 5,
+            "version": 5
+          }
+        ],
+        "entry_timestamps": [
+          1792462192743,
+          1792462192844,
+          1792462192945,
+          1792462193047,
+          1792462193148,
+          1792462193250,
+          1792462193352
+        ],
+        "greatest_version": 6,
+        "known_versions": [
+          {
+            "commitment": "1b523b988fb3fc6a8f4104c30834ef746997e001643eb4f1d79a93e89ebc8515",
+            "version": 0,
+            "vrf_output": "fd9ecf918e3b2a80ad06e2474e7a43de9578e3a10e0e4211d7c907e27179a1e3"
+          },
+          {
+            "commitment": "b66363c9fe35bbf0f53127e3ec446eca2f4fe309401d987822c88ea0942077d9",
+            "version": 1,
+            "vrf_output": "a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7f"
+          },
+          {
+            "commitment": "5271676936820e410fcb818945f63189b0f943ebb9e0f0f42219d11c3dc5cd7a",
+            "version": 2,
+            "vrf_output": "49ac592e66e6cdf540930a2de58d345878986b1e337ee0aeb9d5c3730be70e45"
+          },
+          {
+            "commitment": "3021ef97215c29250259ff6151395c8fd32d60bd5400969c353e42dca74740dc",
+            "version": 3,
+            "vrf_output": "ef0582ede742f1d47079dad60b655a3e4bab73d2bf1da0b3d6db7a833f132fee"
+          },
+          {
+            "commitment": "6e5689878410b0c09b4e48b8be2aa5c569bba7c604572c2aa064f486f4330de5",
+            "version": 4,
+            "vrf_output": "f9177f084968b05e8b34978d8f50108baad4083600b51f944dc54460e0d850ae"
+          },
+          {
+            "commitment": "97972216e7a1f5ea61f04611dbfc02dba601b0db866d68ea5fcbdebfc9b597d5",
+            "version": 5,
+            "vrf_output": "8bae45f7cb557efa69cdfc5607df19343b91071c69818c06a124adec721d3ba8"
+          },
+          {
+            "commitment": "be66c6313e8a8b52c6746700b909ec4edb79eedfcab1f4b55dd80235bdcb7658",
+            "version": 6,
+            "vrf_output": "599424025a070d0e48913585265a30210ffe3416005c77c2354094f14c6358a1"
+          },
+          {
+            "version": 7,
+            "vrf_output": "80e204b5356fa5a4e88a74d22763e8212b9e2882397e69aaf852a7010f23f672"
+          }
+        ],
+        "label": "616c696365406578616d706c652e636f6d",
+        "maximum_lifetime": 0,
+        "mode": 1,
+        "monitoring_window": 50,
+        "mutations": [
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d31"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d32"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d33"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d34"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d35"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d36"
+              }
+            ]
+          },
+          {
+            "add": [
+              {
+                "label": "616c696365406578616d706c652e636f6d",
+                "value": "616c6963652d37"
+              }
+            ]
+          }
+        ],
+        "operation": "owner-monitor",
+        "signature_public_key": "e2fe2a39b7326642827d6d82d497622cd6c297fe78270eaa436b01f086b6f3cb",
+        "start": 1,
+        "vrf_public_key": "555f469c22188e90015bdd85b889678d459f86bdf8f7bd34971b10b9b3858609"
+      },
+      "expect": {
+        "full_tree_head": "020000000000000007004092e5dc9ddff2e1398c92080dcd8f550b5a19302c11e707b7ef1df5ba4c8798b5fe47d081d31439e68ca399fdbf14cc29b2569ec24509ccde27d86bd713b07601",
+        "inclusion": [
+          "5eaebd2fb743cd1c93df6667b5d021b1d93f351e93eb34fcb8608d5298644f74"
+        ],
+        "prefix_proofs": [
+          {
+            "elements": [],
+            "encoding": "000000040102010202fd9ecf918e3b2a80ad06e2474e7a43de9578e3a10e0e4211d7c907e27179a1e31b523b988fb3fc6a8f4104c30834ef746997e001643eb4f1d79a93e89ebc851502010100000000",
+            "results": [
+              {
+                "depth": 2,
+                "result_type": 1
+              },
+              {
+                "depth": 2,
+                "result_type": 1
+              },
+              {
+                "depth": 2,
+                "leaf": {
+                  "commitment": "1b523b988fb3fc6a8f4104c30834ef746997e001643eb4f1d79a93e89ebc8515",
+                  "vrf_output": "fd9ecf918e3b2a80ad06e2474e7a43de9578e3a10e0e4211d7c907e27179a1e3"
+                },
+                "result_type": 2
+              },
+              {
+                "depth": 1,
+                "result_type": 1
+              }
+            ]
+          },
+          {
+            "elements": [
+              "f4f8a9599e842cb910726d42b51c70a29b68e444588376fcd20bd09db43ec359",
+              "0000000000000000000000000000000000000000000000000000000000000000"
+            ],
+            "encoding": "0000000601040102010402a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7fb66363c9fe35bbf0f53127e3ec446eca2f4fe309401d987822c88ea0942077d90202a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7fb66363c9fe35bbf0f53127e3ec446eca2f4fe309401d987822c88ea0942077d90202fd9ecf918e3b2a80ad06e2474e7a43de9578e3a10e0e4211d7c907e27179a1e31b523b988fb3fc6a8f4104c30834ef746997e001643eb4f1d79a93e89ebc85150400000002f4f8a9599e842cb910726d42b51c70a29b68e444588376fcd20bd09db43ec3590000000000000000000000000000000000000000000000000000000000000000",
+            "results": [
+              {
+                "depth": 4,
+                "result_type": 1
+              },
+              {
+                "depth": 2,
+                "result_type": 1
+              },
+              {
+                "depth": 4,
+                "result_type": 1
+              },
+              {
+                "depth": 2,
+                "leaf": {
+                  "commitment": "b66363c9fe35bbf0f53127e3ec446eca2f4fe309401d987822c88ea0942077d9",
+                  "vrf_output": "a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7f"
+                },
+                "result_type": 2
+              },
+              {
+                "depth": 2,
+                "leaf": {
+                  "commitment": "b66363c9fe35bbf0f53127e3ec446eca2f4fe309401d987822c88ea0942077d9",
+                  "vrf_output": "a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7f"
+                },
+                "result_type": 2
+              },
+              {
+                "depth": 4,
+                "leaf": {
+                  "commitment": "1b523b988fb3fc6a8f4104c30834ef746997e001643eb4f1d79a93e89ebc8515",
+                  "vrf_output": "fd9ecf918e3b2a80ad06e2474e7a43de9578e3a10e0e4211d7c907e27179a1e3"
+                },
+                "result_type": 2
+              }
+            ]
+          },
+          {
+            "elements": [
+              "f4f8a9599e842cb910726d42b51c70a29b68e444588376fcd20bd09db43ec359",
+              "0000000000000000000000000000000000000000000000000000000000000000",
+              "0000000000000000000000000000000000000000000000000000000000000000"
+            ],
+            "encoding": "0000000601060102010402a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7fb66363c9fe35bbf0f53127e3ec446eca2f4fe309401d987822c88ea0942077d90202a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7fb66363c9fe35bbf0f53127e3ec446eca2f4fe309401d987822c88ea0942077d902010600000003f4f8a9599e842cb910726d42b51c70a29b68e444588376fcd20bd09db43ec35900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+            "results": [
+              {
+                "depth": 6,
+                "result_type": 1
+              },
+              {
+                "depth": 2,
+                "result_type": 1
+              },
+              {
+                "depth": 4,
+                "result_type": 1
+              },
+              {
+                "depth": 2,
+                "leaf": {
+                  "commitment": "b66363c9fe35bbf0f53127e3ec446eca2f4fe309401d987822c88ea0942077d9",
+                  "vrf_output": "a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7f"
+                },
+                "result_type": 2
+              },
+              {
+                "depth": 2,
+                "leaf": {
+                  "commitment": "b66363c9fe35bbf0f53127e3ec446eca2f4fe309401d987822c88ea0942077d9",
+                  "vrf_output": "a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7f"
+                },
+                "result_type": 2
+              },
+              {
+                "depth": 6,
+                "result_type": 1
+              }
+            ]
+          },
+          {
+            "elements": [
+              "0000000000000000000000000000000000000000000000000000000000000000",
+              "0000000000000000000000000000000000000000000000000000000000000000",
+              "d50f4c9562408d471cd40475700b2c20a1e0d0bea44d0cb38e00b72cd8cca955"
+            ],
+            "encoding": "00000006010601030104028bae45f7cb557efa69cdfc5607df19343b91071c69818c06a124adec721d3ba897972216e7a1f5ea61f04611dbfc02dba601b0db866d68ea5fcbdebfc9b597d50301030249ac592e66e6cdf540930a2de58d345878986b1e337ee0aeb9d5c3730be70e455271676936820e410fcb818945f63189b0f943ebb9e0f0f42219d11c3dc5cd7a010000000300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d50f4c9562408d471cd40475700b2c20a1e0d0bea44d0cb38e00b72cd8cca955",
+            "results": [
+              {
+                "depth": 6,
+                "result_type": 1
+              },
+              {
+                "depth": 3,
+                "result_type": 1
+              },
+              {
+                "depth": 4,
+                "result_type": 1
+              },
+              {
+                "depth": 3,
+                "leaf": {
+                  "commitment": "97972216e7a1f5ea61f04611dbfc02dba601b0db866d68ea5fcbdebfc9b597d5",
+                  "vrf_output": "8bae45f7cb557efa69cdfc5607df19343b91071c69818c06a124adec721d3ba8"
+                },
+                "result_type": 2
+              },
+              {
+                "depth": 3,
+                "result_type": 1
+              },
+              {
+                "depth": 1,
+                "leaf": {
+                  "commitment": "5271676936820e410fcb818945f63189b0f943ebb9e0f0f42219d11c3dc5cd7a",
+                  "vrf_output": "49ac592e66e6cdf540930a2de58d345878986b1e337ee0aeb9d5c3730be70e45"
+                },
+                "result_type": 2
+              }
+            ]
+          },
+          {
+            "elements": [
+              "0000000000000000000000000000000000000000000000000000000000000000",
+              "f4f8a9599e842cb910726d42b51c70a29b68e444588376fcd20bd09db43ec359",
+              "0000000000000000000000000000000000000000000000000000000000000000",
+              "0000000000000000000000000000000000000000000000000000000000000000",
+              "0000000000000000000000000000000000000000000000000000000000000000",
+              "d50f4c9562408d471cd40475700b2c20a1e0d0bea44d0cb38e00b72cd8cca955"
+            ],
+            "encoding": "00000006010601030104028bae45f7cb557efa69cdfc5607df19343b91071c69818c06a124adec721d3ba897972216e7a1f5ea61f04611dbfc02dba601b0db866d68ea5fcbdebfc9b597d50301030104000000060000000000000000000000000000000000000000000000000000000000000000f4f8a9599e842cb910726d42b51c70a29b68e444588376fcd20bd09db43ec359000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d50f4c9562408d471cd40475700b2c20a1e0d0bea44d0cb38e00b72cd8cca955",
+            "results": [
+              {
+                "depth": 6,
+                "result_type": 1
+              },
+              {
+                "depth": 3,
+                "result_type": 1
+              },
+              {
+                "depth": 4,
+                "result_type": 1
+              },
+              {
+                "depth": 3,
+                "leaf": {
+                  "commitment": "97972216e7a1f5ea61f04611dbfc02dba601b0db866d68ea5fcbdebfc9b597d5",
+                  "vrf_output": "8bae45f7cb557efa69cdfc5607df19343b91071c69818c06a124adec721d3ba8"
+                },
+                "result_type": 2
+              },
+              {
+                "depth": 3,
+                "result_type": 1
+              },
+              {
+                "depth": 4,
+                "result_type": 1
+              }
+            ]
+          }
+        ],
+        "prefix_roots": [
+          "26adbee418b9179ed5a9067f05c1d0ad51fd86cb59e662aa01dfb83c37f252dd"
+        ],
+        "response": "020000000000000007004092e5dc9ddff2e1398c92080dcd8f550b5a19302c11e707b7ef1df5ba4c8798b5fe47d081d31439e68ca399fdbf14cc29b2569ec24509ccde27d86bd713b0760106000001a157128197000001a157128262000001a1571282c8000001a1571280cc000001a157128131000001a1571281fc05000000040102010202fd9ecf918e3b2a80ad06e2474e7a43de9578e3a10e0e4211d7c907e27179a1e31b523b988fb3fc6a8f4104c30834ef746997e001643eb4f1d79a93e89ebc8515020101000000000000000601040102010402a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7fb66363c9fe35bbf0f53127e3ec446eca2f4fe309401d987822c88ea0942077d90202a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7fb66363c9fe35bbf0f53127e3ec446eca2f4fe309401d987822c88ea0942077d90202fd9ecf918e3b2a80ad06e2474e7a43de9578e3a10e0e4211d7c907e27179a1e31b523b988fb3fc6a8f4104c30834ef746997e001643eb4f1d79a93e89ebc85150400000002f4f8a9599e842cb910726d42b51c70a29b68e444588376fcd20bd09db43ec35900000000000000000000000000000000000000000000000000000000000000000000000601060102010402a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7fb66363c9fe35bbf0f53127e3ec446eca2f4fe309401d987822c88ea0942077d90202a23e5c9a8983f63dd4358efa06aa4d2077629a50c452b7e3da7a1b26e6181f7fb66363c9fe35bbf0f53127e3ec446eca2f4fe309401d987822c88ea0942077d902010600000003f4f8a9599e842cb910726d42b51c70a29b68e444588376fcd20bd09db43ec3590000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006010601030104028bae45f7cb557efa69cdfc5607df19343b91071c69818c06a124adec721d3ba897972216e7a1f5ea61f04611dbfc02dba601b0db866d68ea5fcbdebfc9b597d50301030249ac592e66e6cdf540930a2de58d345878986b1e337ee0aeb9d5c3730be70e455271676936820e410fcb818945f63189b0f943ebb9e0f0f42219d11c3dc5cd7a010000000300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d50f4c9562408d471cd40475700b2c20a1e0d0bea44d0cb38e00b72cd8cca95500000006010601030104028bae45f7cb557efa69cdfc5607df19343b91071c69818c06a124adec721d3ba897972216e7a1f5ea61f04611dbfc02dba601b0db866d68ea5fcbdebfc9b597d50301030104000000060000000000000000000000000000000000000000000000000000000000000000f4f8a9599e842cb910726d42b51c70a29b68e444588376fcd20bd09db43ec359000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d50f4c9562408d471cd40475700b2c20a1e0d0bea44d0cb38e00b72cd8cca9550126adbee418b9179ed5a9067f05c1d0ad51fd86cb59e662aa01dfb83c37f252dd00015eaebd2fb743cd1c93df6667b5d021b1d93f351e93eb34fcb8608d5298644f74",
+        "timestamps": [
+          1792462193047,
+          1792462193250,
+          1792462193352,
+          1792462192844,
+          1792462192945,
+          1792462193148
+        ],
+        "tree_size": 7
+      }
+    }
+  ]
+}

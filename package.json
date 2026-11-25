@@ -1,0 +1,60 @@
+{
+  "name": "tsanparency",
+  "version": "0.0.0",
+  "description": "Key Transparency (draft-ietf-keytrans-protocol-06) client and log",
+  "keywords": [
+    "key-transparency",
+    "keytrans",
+    "transparency-log",
+    "vrf"
+  ],
+  "license": "MIT",
+  "author": "Thibault Meunier",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thibmeu/tsanparency.git"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "fmt": "oxfmt",
+    "test": "vitest run",
+    "bench:profile": "node bench/profile.ts",
+    "bench:trace": "node bench/trace.ts",
+    "test:browser": "vitest run --config vitest.browser.config.ts",
+    "test:workers": "vitest run --config vitest.workers.config.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint && oxfmt --check",
+    "examples": "node examples/index.ts"
+  },
+  "dependencies": {
+    "@noble/curves": "^2.4.0",
+    "@noble/hashes": "^2.4.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.9.2",
+    "@fast-check/vitest": "^0.5.0",
+    "@types/node": "^26.6.10",
+    "@vitest/browser": "^5.1.2",
+    "@vitest/browser-playwright": "^5.1.2",
+    "fast-check": "^4.11.0",
+    "oxfmt": "^0.80.0",
+    "oxlint": "^1.95.0",
+    "playwright": "^1.65.1",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.2"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

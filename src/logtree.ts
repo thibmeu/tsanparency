@@ -1,0 +1,94 @@
+/** Left-balanced log tree and batched inclusion/consistency proofs (Sections 3.2, 12.1). */
+import { equalBytes } from "@noble/curves/utils.js";
+import { logParent } from "./crypto.ts";
+
+export interface Range {
+  readonly start: number;
+  readonly size: number;
+}
+
+const isPow2 = (n: number): boolean => n > 0 && 2 ** Math.floor(Math.log2(n)) === n;
+
+function split(size: number): number {
+  let p = 1;
+  while (p * 2 < size) p *= 2;
+  return p;
+}
+
+/** Heads of the largest balanced subtrees of a tree with n leaves, left to right. */
+export function fullSubtrees(n: number): Range[] {
+  const out: Range[] = [];
+  for (let start = 0; start < n;) {
+    let size = 1;
+    while (size * 2 <= n - start) size *= 2;
+    out.push({ start, size });
+    start += size;
+  }
+  return out;
+}
+
+/** Root value from full subtree heads (right to left fold). */
+export function rootFromFullSubtrees(n: number, heads: readonly Uint8Array[]): Uint8Array {
+  const ranges = fullSubtrees(n);
+  let acc = heads[heads.length - 1]!;
+  let accIsLeaf = ranges[ranges.length - 1]!.size === 1;
+  for (let i = heads.length - 2; i >= 0; i--) {
+    acc = logParent(heads[i]!, ranges[i]!.size === 1, acc, accIsLeaf);
+    accIsLeaf = false;
+  }
+  return acc;
+}
+
+export interface Retained {
+  readonly size: number;
+  readonly heads: readonly Uint8Array[];
+}
+
+/**
+ * Computes the root of a tree with n leaves from known leaf values, retained full
+ * subtree heads, and balanced subtree heads supplied by `element` in left-to-right
+ * order. The prover passes an `element` that records stored heads, the verifier one
+ * that consumes the proof. Retained heads recomputed from leaves must match.
+ */
+export function computeRoot(
+  n: number,
+  leaves: ReadonlyMap<number, Uint8Array>,
+  retained: Retained | undefined,
+  element: (r: Range) => Uint8Array,
+): { root: Uint8Array; full: Uint8Array[] } {
+  const m = retained?.size ?? 0;
+  const old = m > 0 ? fullSubtrees(m) : [];
+  const fresh = fullSubtrees(n);
+  const full: Uint8Array[] = Array.from({ length: fresh.length });
+  const sorted = [...leaves.keys()].sort((a, b) => a - b);
+  const hasLeaf = (start: number, size: number): boolean => {
+    let lo = 0;
+    let hi = sorted.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (sorted[mid]! < start) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo < sorted.length && sorted[lo]! < start + size;
+  };
+
+  const node = (start: number, size: number): Uint8Array => {
+    const i = old.findIndex((r) => r.start === start && r.size === size);
+    const kept = i >= 0 ? retained!.heads[i]! : undefined;
+    const any = hasLeaf(start, size);
+    let value: Uint8Array;
+    const coversRetained = old.some((r) => start <= r.start && r.start + r.size <= start + size);
+    if (kept && !any) value = kept;
+    else if (!any && !coversRetained && isPow2(size)) value = element({ start, size });
+    else if (size === 1) value = leaves.get(start)!;
+    else {
+      const k = split(size);
+      value = logParent(node(start, k), k === 1, node(start + k, size - k), size - k === 1);
+    }
+    if (kept && !equalBytes(value, kept)) throw new Error("retained subtree mismatch");
+    const j = fresh.findIndex((r) => r.start === start && r.size === size);
+    if (j >= 0) full[j] = value;
+    return value;
+  };
+  return { root: node(0, n), full };
+}
