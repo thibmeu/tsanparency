@@ -7,7 +7,7 @@ import { equalBytes } from "@noble/curves/utils.js";
 import { logLeaf } from "./crypto.ts";
 import { KTError, KTErrorCode } from "./errors.ts";
 import { ancestors, frontier, hasLeft, hasRight, left, right, root } from "./ibst.ts";
-import { monitoringLadder, searchLadder } from "./ladder.ts";
+import { MAX_VERSION, baseLadder, monitoringLadder, searchLadder } from "./ladder.ts";
 import { type Range, computeRoot, fullSubtrees } from "./logtree.ts";
 import type { CombinedTreeProof, MonitorMapEntry } from "./messages.ts";
 import { type Lookup, type Node, ResultType, contains, evaluate, prove } from "./prefix.ts";
@@ -206,7 +206,12 @@ function expiry(c: Context, p: Params): (x: number) => boolean {
 }
 
 /** Contact monitoring (Sections 8.2, 12.3.4). Returns the updated monitoring map. */
-export function contactMonitor(c: Context, p: Params, entries: readonly MonitorMapEntry[]): MonitorMapEntry[] {
+export function contactMonitor(
+  c: Context,
+  p: Params,
+  entries: readonly MonitorMapEntry[],
+  owner?: { readonly start?: number | undefined },
+): MonitorMapEntry[] {
   const rmw = p.reasonableMonitoringWindow;
   const distinguished = (x: number): boolean => isDistinguished(c, rmw, x);
   const original = new Map(entries.map((e) => [e.position, e.version]));
@@ -219,6 +224,9 @@ export function contactMonitor(c: Context, p: Params, entries: readonly MonitorM
       .sort((a, b) => a - b);
     const stop = list.findIndex(distinguished);
     if (stop >= 0) list.length = stop + 1;
+    // During owner monitoring, the second algorithm of Section 8.3 inspects that
+    // final distinguished entry instead (Section 8.2, step 2.4)
+    if (stop >= 0 && owner && (owner.start === undefined || position >= owner.start)) list.length = stop;
     let at = position;
     for (const x of list) {
       const prior = original.get(x) ?? ladders.get(x);
@@ -243,6 +251,130 @@ export function contactMonitor(c: Context, p: Params, entries: readonly MonitorM
     .filter(([x]) => !distinguished(x))
     .map(([position, version]) => ({ position, version }))
     .sort((a, b) => a.position - b.position);
+}
+
+/** What a label owner knows about the versions of its label */
+export interface OwnerHistory {
+  /** Greatest version that existed as of log entry x, if any */
+  greatestAt(x: number): number | undefined;
+}
+
+/**
+ * Owner initialization, first algorithm of Section 8.3 (Section 12.3.5). The start
+ * must be an unexpired distinguished entry. The log then proves the greatest
+ * version at the start and at each ancestor to its left, stopping before the
+ * first expired one. `versionAt` gives the greatest version at the i-th listed
+ * entry x, and each must be at most the one before. Returns the listed entries
+ * and their versions.
+ */
+export function ownerInit(
+  c: Context,
+  p: Params,
+  start: number | undefined,
+  versionAt: (i: number, x: number) => number | undefined,
+): { list: number[]; versions: (number | undefined)[] } {
+  if (start === undefined) return { list: [], versions: [] };
+  if (start >= c.n) throw new Error("start is outside the tree");
+  for (const a of ancestors(start, c.n)) c.timestamp(a);
+  c.timestamp(start);
+  const expired = expiry(c, p);
+  if (expired(start) || !isDistinguished(c, p.reasonableMonitoringWindow, start))
+    throw new Error("start is not an unexpired distinguished entry");
+  const list = [start];
+  for (const a of ancestors(start, c.n).reverse()) {
+    if (a > start) continue;
+    if (expired(a)) break;
+    list.push(a);
+  }
+  const versions = list.map((x, i) => versionAt(i, x));
+  for (let i = 1; i < versions.length; i++) {
+    const v = versions[i];
+    if (v !== undefined && (versions[i - 1] === undefined || v > versions[i - 1]!))
+      throw new Error("greatest versions must not increase to the left");
+  }
+  list.forEach((x, i) => exactLadder(c, x, versions[i]));
+  return { list, versions };
+}
+
+/**
+ * Owner monitoring, second algorithm of Section 8.3 (Section 12.3.6). Visits the
+ * distinguished entries right of `start` in order and proves at each the greatest
+ * version the owner expects there, until `stop` ends the response. Returns the
+ * rightmost entry verified.
+ */
+export function ownerMonitor(
+  c: Context,
+  p: Params,
+  start: number | undefined,
+  owner: OwnerHistory,
+  stop: (x: number) => boolean,
+): number | undefined {
+  const rmw = p.reasonableMonitoringWindow;
+  let verified: number | undefined;
+  let stopped = false;
+  const walk = (x: number): void => {
+    if (stopped || !isDistinguished(c, rmw, x)) return;
+    if (start !== undefined && x <= start) {
+      if (hasRight(x, c.n)) walk(right(x, c.n));
+      return;
+    }
+    if (hasLeft(x)) walk(left(x));
+    if (stopped || stop(x)) {
+      stopped = true;
+      return;
+    }
+    exactLadder(c, x, owner.greatestAt(x));
+    verified = x;
+    if (hasRight(x, c.n)) walk(right(x, c.n));
+  };
+  walk(root(c.n));
+  return verified;
+}
+
+export interface UpdateHistory extends OwnerHistory {
+  /** Greatest version before the update, if any */
+  readonly greatest: number | undefined;
+  /** Where that version was inserted, or the starting position if later */
+  readonly lastUpdate: number | undefined;
+}
+
+/**
+ * Proves that `created` new versions were inserted at `position` (Sections 9.1,
+ * 12.3.7). Returns whether that entry is distinguished, in which case owner
+ * monitoring covers it, and otherwise it joins the contact monitoring map.
+ */
+export function labelUpdate(c: Context, p: Params, owner: UpdateHistory, position: number, created: number): boolean {
+  const rmw = p.reasonableMonitoringWindow;
+  const before = owner.greatest;
+  const after = (before ?? -1) + created;
+  if (created < 1 || after > MAX_VERSION) throw new Error("unexpected number of new versions");
+  const omit = new Omissions();
+  // Phase 1: a greatest-version search of the previous tree, from the first entry
+  // on its frontier that is not distinguished in the current tree. Lookups the
+  // search would have made at its rightmost distinguished entry, or at entries
+  // already checked by an earlier update, still count as made.
+  if (position > 0) {
+    const previous = frontier(position);
+    const first = previous.findIndex((x) => !isDistinguished(c, rmw, x));
+    if (first > 0 && before !== undefined)
+      omit.assume(previous[first - 1]!, before, owner.greatestAt(previous[first - 1]!));
+    for (const x of first < 0 ? [] : previous.slice(first)) {
+      if (owner.lastUpdate !== undefined && x <= owner.lastUpdate) {
+        if (before !== undefined) omit.assume(x, before, owner.greatestAt(x));
+      } else exactLadder(c, x, before, omit);
+    }
+  }
+  // Phase 2: how the versions were created at `position`
+  const distinguished = isDistinguished(c, rmw, position);
+  if (!distinguished) exactLadder(c, position, after, omit);
+  const ladder = new Set(baseLadder(after));
+  const extra: number[] = [];
+  for (let v = (before ?? -1) + 1; v <= after; v++) if (!ladder.has(v)) extra.push(v);
+  if (extra.length)
+    c.ladder(position, (probe) => {
+      for (const v of extra) if (!probe(v)) throw new Error("new version is missing");
+    });
+  return distinguished;
 }
 
 export interface FrontierEntry {
@@ -393,6 +525,11 @@ export class Verifier implements Context {
     const known = this.#roots.get(x);
     if (known && !equalBytes(known, computed)) throw new Error("prefix root mismatch");
     this.#roots.set(x, computed);
+  }
+
+  /** Whether prefix proofs remain, which is how a user sees the log stop owner monitoring (Section 8.3) */
+  get exhausted(): boolean {
+    return this.#nextProof >= this.#proof.prefixProofs.length;
   }
 
   /** Checks every field was fully consumed and returns the new view and log root. */

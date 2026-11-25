@@ -1,4 +1,4 @@
-/** In-memory Transparency Log serving Search and Contact Monitor (Sections 9, 13). */
+/** In-memory Transparency Log serving the user operations of Section 13 */
 import { bytesToHex, equalBytes } from "@noble/curves/utils.js";
 import {
   type Snapshot,
@@ -6,6 +6,9 @@ import {
   contactMonitor,
   fixedVersionSearch,
   greatestVersionSearch,
+  labelUpdate,
+  ownerInit,
+  ownerMonitor,
   updateView,
 } from "./combined.ts";
 import {
@@ -24,15 +27,20 @@ import { ancestors } from "./ibst.ts";
 import { baseLadder } from "./ladder.ts";
 import { type Range, fullSubtrees, rootFromFullSubtrees } from "./logtree.ts";
 import {
-  type ContactMonitorRequest,
-  type SearchRequest,
+  type MonitorMapEntry,
   decodeContactMonitorRequest,
+  decodeOwnerInitRequest,
+  decodeOwnerMonitorRequest,
   decodeSearchRequest,
+  decodeUpdateRequest,
   encodeContactMonitorResponse,
+  encodeOwnerInitResponse,
+  encodeOwnerMonitorResponse,
   encodeSearchResponse,
+  encodeUpdateResponse,
 } from "./messages.ts";
 import { type Node, insert, rootHash } from "./prefix.ts";
-import { DecodeError, decode } from "./tls.ts";
+import { type Reader, decode } from "./tls.ts";
 import { Operation } from "./client.ts";
 
 export interface Authorization {
@@ -55,19 +63,25 @@ export interface LogOptions {
   readonly signingKey: CryptoKeyPair;
   /** 32-byte VRF secret key matching the configuration */
   readonly vrfSecretKey: Uint8Array;
-  /** Decides Search access. Monitor is also allowed for versions this principal found. */
+  /**
+   * Decides access per operation. Without it, Search is open, Contact Monitor is
+   * open for versions the principal found, and owner operations are denied.
+   */
   readonly authorize?: (request: Authorization) => boolean | Promise<boolean>;
   readonly limits?: Partial<Limits>;
   /** Milliseconds since the Unix epoch. */
   readonly now?: () => number;
 }
 
-export interface Update {
+export type Update = {
   readonly label: Uint8Array | string;
-  readonly value: Uint8Array;
   /** null creates the label, and a number must equal the latest version */
   readonly expectedVersion: number | null;
-}
+} & (
+  | { readonly value: Uint8Array }
+  /** Consecutive new versions created in one log entry */
+  | { readonly values: readonly Uint8Array[] }
+);
 
 export interface HandleOptions {
   readonly principal: string;
@@ -77,13 +91,16 @@ export interface HandleOptions {
 export interface Log {
   /** Number of published log entries. */
   readonly size: number;
-  /** Adds a new version and publishes it in a new log entry. */
+  /** Adds new versions of a label and publishes them in a new log entry */
   append(update: Update, options?: { readonly signal?: AbortSignal }): Promise<{ version: number; position: number }>;
   /** Publishes a log entry without changes, keeping the tree head fresh. */
   tick(options?: { readonly signal?: AbortSignal }): Promise<void>;
   /** Answers a TLS-encoded request for `operation`. */
   handle(operation: Operation, request: Uint8Array, options: HandleOptions): Promise<Uint8Array>;
 }
+
+/** Distinguished entries proven per Owner Monitoring response (Section 8.3) */
+const OWNER_LADDERS = 25;
 
 const DEFAULT_LIMITS: Limits = {
   maxRequestBytes: 4096,
@@ -203,65 +220,231 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
     return { state, greatest };
   }
 
-  const grantKey = (label: Uint8Array, version: number) => `${bytesToHex(label)}:${version}`;
-
-  async function search(principal: string, req: SearchRequest, current: Head) {
-    const { label, last } = req;
-    const n = current.treeSize;
-    const { state, greatest } = lookup(label, n);
-    const t = req.version ?? greatest;
-    if (t > greatest) throw new KTError(KTErrorCode.NotFound);
-    const prover = new Prover(snapshot(n), last ?? 0, (v) => vrfOf(state, label, v).output);
-    updateView(prover, last ?? 0);
-    if (req.version === undefined) greatestVersionSearch(prover, params, t);
-    else fixedVersionSearch(prover, params, t);
-    const target = state.versions[t]!;
-    let granted = grants.get(principal);
-    if (!granted) grants.set(principal, (granted = new Set()));
-    granted.add(grantKey(label, t));
-    return encodeSearchResponse(
-      {
-        treeHead: last === n ? undefined : current,
-        version: t,
-        opening: target.opening,
-        value: target.value,
-        binaryLadder: baseLadder(t).map((v) => ({
-          proof: vrfOf(state, label, v).proof,
-          commitment: v !== t && v <= greatest ? state.versions[v]!.commitment : undefined,
-        })),
-        search: prover.finish(),
-      },
-      req.version !== undefined,
-    );
+  /** Label state for proofs, created empty so VRF proofs are cached for unused labels too */
+  function labelState(label: Uint8Array): LabelState {
+    const key = bytesToHex(label);
+    let state = labels.get(key);
+    if (!state) labels.set(key, (state = { versions: [], vrf: new Map() }));
+    return state;
   }
 
-  function monitor(req: ContactMonitorRequest, current: Head) {
-    const n = current.treeSize;
-    const { state, greatest } = lookup(req.label, n);
+  /** Greatest version as of log entry x */
+  const greatestAt = (state: LabelState, x: number): number | undefined => {
+    const v = state.versions.findLastIndex((e) => e.position <= x);
+    return v < 0 ? undefined : v;
+  };
+
+  const prover = (state: LabelState, label: Uint8Array, n: number, last: number | undefined) => {
+    const p = new Prover(snapshot(n), last ?? 0, (v) => vrfOf(state, label, v).output);
+    updateView(p, last ?? 0);
+    return p;
+  };
+
+  const steps = (
+    state: LabelState,
+    label: Uint8Array,
+    versions: Iterable<number>,
+    withCommitment: (v: number) => boolean,
+  ) =>
+    [...versions].map((v) => ({
+      proof: vrfOf(state, label, v).proof,
+      commitment: withCommitment(v) ? state.versions[v]!.commitment : undefined,
+    }));
+
+  const grantKey = (label: Uint8Array, version: number) => `${bytesToHex(label)}:${version}`;
+
+  /** Checks a monitoring map against the rules of Sections 13.2 and 13.4 */
+  function checkEntries(state: LabelState, entries: readonly MonitorMapEntry[], n: number, greatest: number): void {
     const versions = new Set<number>();
-    for (const [i, e] of req.entries.entries()) {
+    for (const [i, e] of entries.entries()) {
       const first = state.versions[e.version]?.position;
       const valid =
         e.version <= greatest &&
         first !== undefined &&
         (e.position === first || ancestors(first, n).includes(e.position)) &&
-        (i === 0 || req.entries[i - 1]!.position < e.position) &&
+        (i === 0 || entries[i - 1]!.position < e.position) &&
         !versions.has(e.version);
       if (!valid) throw new KTError(KTErrorCode.InvalidRequest);
       versions.add(e.version);
     }
-    const prover = new Prover(snapshot(n), req.last ?? 0, (v) => vrfOf(state, req.label, v).output);
-    updateView(prover, req.last ?? 0);
-    try {
-      contactMonitor(prover, params, req.entries);
-    } catch (e) {
-      if (e instanceof KTError) throw e;
-      throw new KTError(KTErrorCode.InvalidRequest, { cause: e });
+  }
+
+  /** Inserts consecutive versions of one label into a new log entry */
+  async function insertVersions(label: Uint8Array, values: readonly Uint8Array[], expected: number | null) {
+    const state = labelState(label);
+    const latest = state.versions.length - 1;
+    if ((expected ?? -1) !== latest) throw new KTError(KTErrorCode.Conflict);
+    let tree = entries.at(-1)?.tree ?? null;
+    const position = entries.length;
+    for (const value of values) {
+      const version = state.versions.length;
+      const opening = crypto.getRandomValues(new Uint8Array(NC));
+      const c = commitment(opening, label, version, value);
+      tree = insert(tree, vrfOf(state, label, version).output, c);
+      state.versions.push({ position, opening, value, commitment: c });
     }
-    return encodeContactMonitorResponse({
-      treeHead: req.last === n ? undefined : current,
-      monitor: prover.finish(),
+    await publish(tree, () => {
+      state.versions.length = latest + 1;
     });
+    return { version: state.versions.length - 1, position };
+  }
+
+  const handlers: Record<Operation, (r: Reader, principal: string, current: Head) => Promise<Uint8Array>> = {
+    async [Operation.Search](r, principal, current) {
+      const req = decodeSearchRequest(r);
+      const n = current.treeSize;
+      checkLast(req.last, n);
+      await authorize(Operation.Search, req.label, principal);
+      const { state, greatest } = lookup(req.label, n);
+      const t = req.version ?? greatest;
+      if (t > greatest) throw new KTError(KTErrorCode.NotFound);
+      const p = prover(state, req.label, n, req.last);
+      if (req.version === undefined) greatestVersionSearch(p, params, t);
+      else fixedVersionSearch(p, params, t);
+      let granted = grants.get(principal);
+      if (!granted) grants.set(principal, (granted = new Set()));
+      granted.add(grantKey(req.label, t));
+      const target = state.versions[t]!;
+      return encodeSearchResponse(
+        {
+          treeHead: req.last === n ? undefined : current,
+          version: t,
+          opening: target.opening,
+          value: target.value,
+          binaryLadder: steps(state, req.label, baseLadder(t), (v) => v !== t && v <= greatest),
+          search: p.finish(),
+        },
+        req.version !== undefined,
+      );
+    },
+
+    async [Operation.ContactMonitor](r, principal, current) {
+      const req = decodeContactMonitorRequest(r);
+      const n = current.treeSize;
+      checkLast(req.last, n);
+      if (!req.entries.length) throw new KTError(KTErrorCode.InvalidRequest);
+      // Users keep monitoring versions they looked up even once access is revoked (Section 13.2)
+      const entitled = req.entries.every((e) => grants.get(principal)?.has(grantKey(req.label, e.version)));
+      if (!entitled) await authorize(Operation.ContactMonitor, req.label, principal);
+      const { state, greatest } = lookup(req.label, n);
+      checkEntries(state, req.entries, n, greatest);
+      const p = prover(state, req.label, n, req.last);
+      contactMonitor(p, params, req.entries);
+      return encodeContactMonitorResponse({ treeHead: req.last === n ? undefined : current, monitor: p.finish() });
+    },
+
+    async [Operation.OwnerInit](r, principal, current) {
+      const req = decodeOwnerInitRequest(r);
+      const n = current.treeSize;
+      checkLast(req.last, n);
+      await authorize(Operation.OwnerInit, req.label, principal);
+      if (req.start !== undefined && req.start >= n) throw new KTError(KTErrorCode.InvalidRequest);
+      const state = labelState(req.label);
+      const p = prover(state, req.label, n, req.last);
+      const { versions } = ownerInit(p, params, req.start, (_, x) => greatestAt(state, x));
+      const greatestVersions = versions.filter((v) => v !== undefined);
+      const ladder = new Set([0, ...greatestVersions.flatMap(baseLadder)]);
+      const atStart = req.start === undefined ? -1 : (greatestAt(state, req.start) ?? -1);
+      return encodeOwnerInitResponse({
+        treeHead: req.last === n ? undefined : current,
+        greatestVersions,
+        binaryLadder: steps(
+          state,
+          req.label,
+          [...ladder].sort((a, b) => a - b),
+          (v) => v <= atStart,
+        ),
+        init: p.finish(),
+      });
+    },
+
+    async [Operation.OwnerMonitor](r, principal, current) {
+      const req = decodeOwnerMonitorRequest(r);
+      const n = current.treeSize;
+      checkLast(req.last, n);
+      await authorize(Operation.OwnerMonitor, req.label, principal);
+      const state = labelState(req.label);
+      const greatest = state.versions.findLastIndex((v) => v.position < n);
+      const advertised = req.greatestVersion ?? -1;
+      const atStart = req.start === undefined ? -1 : (greatestAt(state, req.start) ?? -1);
+      if ((req.start !== undefined && req.start >= n) || advertised > greatest || advertised < atStart)
+        throw new KTError(KTErrorCode.InvalidRequest);
+      checkEntries(state, req.entries, n, greatest);
+      const p = prover(state, req.label, n, req.last);
+      contactMonitor(p, params, req.entries, { start: req.start });
+      let ladders = 0;
+      const history = { greatestAt: (x: number) => greatestAt(state, x) };
+      // The log stops at a version the owner does not know yet, or after enough ladders
+      ownerMonitor(
+        p,
+        params,
+        req.start,
+        history,
+        (x) => (greatestAt(state, x) ?? -1) > advertised || ladders++ >= OWNER_LADDERS,
+      );
+      return encodeOwnerMonitorResponse({ treeHead: req.last === n ? undefined : current, monitor: p.finish() });
+    },
+
+    async [Operation.Update](r, principal, current) {
+      const req = decodeUpdateRequest(r);
+      checkLast(req.last, current.treeSize);
+      await authorize(Operation.Update, req.label, principal);
+      const state = labelState(req.label);
+      const advertised = req.greatestVersion ?? -1;
+      const known = state.versions.findLastIndex((v) => v.position < current.treeSize);
+      if (advertised > known || (advertised === known && !req.values.length))
+        throw new KTError(KTErrorCode.InvalidRequest);
+      if (req.values.some((v) => v.length > limits.maxValueBytes)) throw new KTError(KTErrorCode.InvalidRequest);
+      // Report versions the owner has not seen yet, or create the requested ones
+      let at = current;
+      let disregarded = false;
+      if (advertised < known) disregarded = true;
+      else {
+        await enqueue(undefined, () => insertVersions(req.label, req.values, req.greatestVersion ?? null));
+        at = head!;
+      }
+      const n = at.treeSize;
+      const position = state.versions[advertised + 1]!.position;
+      const created = state.versions.filter((v, i) => i > advertised && v.position === position);
+      const after = advertised + created.length;
+      const before = req.greatestVersion;
+      const p = prover(state, req.label, n, req.last);
+      const history = {
+        greatest: before,
+        lastUpdate: before === undefined ? undefined : state.versions[before]!.position,
+        greatestAt: (x: number) => greatestAt(state, x),
+      };
+      labelUpdate(p, params, history, position, created.length);
+      // VRF proofs the owner lacks: the search ladder for the new greatest version and
+      // each new version, less the search ladder it already knows (Section 9.1)
+      const wanted = new Set([
+        ...baseLadder(after),
+        ...(created.length > 1 ? created.map((_, i) => advertised + 1 + i) : []),
+      ]);
+      for (const v of before === undefined ? [0] : baseLadder(before)) wanted.delete(v);
+      return encodeUpdateResponse({
+        treeHead: req.last === n ? undefined : at,
+        position,
+        values: disregarded ? created.map((v) => v.value) : [],
+        openings: created.map((v) => v.opening),
+        binaryLadder: steps(
+          state,
+          req.label,
+          [...wanted].sort((a, b) => a - b),
+          (v) => v < advertised,
+        ),
+        update: p.finish(),
+      });
+    },
+  };
+
+  function checkLast(last: number | undefined, n: number): void {
+    if (last !== undefined && (last < 1 || last > n)) throw new KTError(KTErrorCode.InvalidRequest);
+  }
+
+  async function authorize(operation: Operation, label: Uint8Array, principal: string): Promise<void> {
+    const allowed = (await options.authorize?.({ operation, label, principal })) ?? operation === Operation.Search;
+    if (!allowed) throw new KTError(KTErrorCode.Unauthorized);
   }
 
   return {
@@ -271,31 +454,17 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
 
     append(update, { signal } = {}) {
       const label = typeof update.label === "string" ? new TextEncoder().encode(update.label) : update.label.slice();
-      const value = update.value.slice();
+      const values = ("values" in update ? update.values : [update.value]).map((v) => v.slice());
       const expected = update.expectedVersion;
       if (
         label.length > 255 ||
-        value.length > limits.maxValueBytes ||
+        !values.length ||
+        values.length > 255 ||
+        values.some((v) => v.length > limits.maxValueBytes) ||
         (expected !== null && !Number.isSafeInteger(expected))
       )
         throw new KTError(KTErrorCode.InvalidRequest);
-      return enqueue(signal, async () => {
-        const key = bytesToHex(label);
-        const state: LabelState = labels.get(key) ?? { versions: [], vrf: new Map() };
-        const latest = state.versions.length - 1;
-        if ((expected ?? -1) !== latest) throw new KTError(KTErrorCode.Conflict);
-        const version = latest + 1;
-        const opening = crypto.getRandomValues(new Uint8Array(NC));
-        const c = commitment(opening, label, version, value);
-        const tree = insert(entries.at(-1)?.tree ?? null, vrfOf(state, label, version).output, c);
-        state.versions.push({ position: entries.length, opening, value, commitment: c });
-        labels.set(key, state);
-        const position = await publish(tree, () => {
-          state.versions.pop();
-          if (!state.versions.length) labels.delete(key);
-        });
-        return { version, position };
-      });
+      return enqueue(signal, () => insertVersions(label, values, expected));
     },
 
     tick({ signal } = {}) {
@@ -306,43 +475,21 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
 
     async handle(operation, request, { principal, signal }) {
       if (request.length > limits.maxRequestBytes) throw new KTError(KTErrorCode.InvalidRequest);
+      const handler = handlers[operation];
+      if (!handler) throw new KTError(KTErrorCode.InvalidRequest);
       if (activeReads >= limits.maxActiveReads) throw new KTError(KTErrorCode.Overloaded);
       activeReads++;
       try {
         signal?.throwIfAborted();
         const current = head;
         if (!current) throw new KTError(KTErrorCode.NotFound);
-        const req = parse(operation, request);
-        const entries = "entries" in req ? req.entries : undefined;
-        if (req.last !== undefined && (req.last < 1 || req.last > current.treeSize))
-          throw new KTError(KTErrorCode.InvalidRequest);
-        const allowed =
-          (await options.authorize?.({ operation, label: req.label, principal })) ?? operation === Operation.Search;
-        const entitled = entries?.every((e) => grants.get(principal)?.has(grantKey(req.label, e.version)));
-        if (!allowed && !entitled) throw new KTError(KTErrorCode.Unauthorized);
-        signal?.throwIfAborted();
-        return entries
-          ? monitor({ last: req.last, label: req.label, entries }, current)
-          : await search(principal, req, current).catch((e) => {
-              throw e instanceof KTError ? e : new KTError(KTErrorCode.InvalidRequest, { cause: e });
-            });
+        return await decode(request, (r) => handler(r, principal, current));
+      } catch (e) {
+        if (e instanceof KTError || (e instanceof DOMException && e.name === "AbortError")) throw e;
+        throw new KTError(KTErrorCode.InvalidRequest, { cause: e });
       } finally {
         activeReads--;
       }
     },
   };
-}
-
-function parse(operation: Operation, request: Uint8Array): SearchRequest | ContactMonitorRequest {
-  try {
-    if (operation === Operation.Search) return decode(request, decodeSearchRequest);
-    if (operation === Operation.ContactMonitor) {
-      const req = decode(request, decodeContactMonitorRequest);
-      if (req.entries.length === 0) throw new DecodeError("no entries");
-      return req;
-    }
-  } catch (e) {
-    throw new KTError(KTErrorCode.InvalidRequest, { cause: e });
-  }
-  throw new KTError(KTErrorCode.InvalidRequest);
 }

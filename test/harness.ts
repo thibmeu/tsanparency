@@ -1,5 +1,5 @@
 import { hexToBytes } from "@noble/curves/utils.js";
-import { type Configuration, type Exchange, type Log, createClient, openLog } from "../src/index.ts";
+import { type Configuration, type Exchange, type Log, type LogOptions, createClient, openLog } from "../src/index.ts";
 import { CipherSuite, SUITES } from "../src/crypto.ts";
 
 const VRF_SECRET = hexToBytes("c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721");
@@ -45,11 +45,19 @@ export interface World {
   client(principal: string, tamper?: (response: Uint8Array) => Uint8Array): ReturnType<typeof createClient>;
 }
 
-export async function world(overrides: Partial<Configuration> = {}): Promise<World> {
+export async function world(
+  overrides: Partial<Configuration> = {},
+  logOptions: Partial<LogOptions> = {},
+): Promise<World> {
   const config = await configuration(overrides);
   const clock = { now: 1_700_000_000_000 };
   const { pair } = await signingKey(config.cipherSuite);
-  const log = await openLog(config, { signingKey: pair, vrfSecretKey: VRF_SECRET, now: () => clock.now });
+  const log = await openLog(config, {
+    signingKey: pair,
+    vrfSecretKey: VRF_SECRET,
+    now: () => clock.now,
+    ...logOptions,
+  });
   const exchange =
     (principal: string, tamper?: (r: Uint8Array) => Uint8Array): Exchange =>
     async (operation, request, { signal }) => {

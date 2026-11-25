@@ -3,7 +3,7 @@
 Key Transparency ([draft-ietf-keytrans-protocol-06](https://datatracker.ietf.org/doc/html/draft-ietf-keytrans-protocol-06)) for TypeScript: a client and an embeddable log, in Contact Monitoring mode.
 
 - Cipher suites `KT_128_SHA256_P256` and `KT_128_SHA256_Ed25519`
-- Greatest-version and fixed-version Search, and Contact Monitor
+- Greatest-version and fixed-version Search, Contact Monitor, and the owner operations: Owner Initialization, Owner Monitoring and Updating a Label
 - Runs on Node, Bun, browsers and Cloudflare Workers, using Web Crypto for signatures
 
 Interoperates with [Bren2010/katie](https://github.com/Bren2010/katie) and uses test vectors published by [OR13/kt](https://github.com/OR13/kt).

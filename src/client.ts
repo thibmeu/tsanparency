@@ -7,9 +7,14 @@ import {
   type LadderData,
   type View,
   Verifier,
+  type OwnerHistory,
+  type UpdateHistory,
   contactMonitor,
   fixedVersionSearch,
   greatestVersionSearch,
+  labelUpdate,
+  ownerInit,
+  ownerMonitor,
   rightmostDistinguished,
   updateView,
 } from "./combined.ts";
@@ -27,7 +32,14 @@ import { ancestors, frontier } from "./ibst.ts";
 import { MAX_VERSION, baseLadder, monitoringLadder } from "./ladder.ts";
 import { fullSubtrees, rootFromFullSubtrees } from "./logtree.ts";
 import {
+  type BinaryLadderStep,
   type MonitorMapEntry,
+  decodeOwnerInitResponse,
+  decodeOwnerMonitorResponse,
+  decodeUpdateResponse,
+  encodeOwnerInitRequest,
+  encodeOwnerMonitorRequest,
+  encodeUpdateRequest,
   type TreeHead,
   decodeContactMonitorResponse,
   decodeSearchResponse,
@@ -36,7 +48,13 @@ import {
 } from "./messages.ts";
 import { decode } from "./tls.ts";
 
-export const Operation = { Search: "search", ContactMonitor: "contactMonitor" } as const;
+export const Operation = {
+  Search: "search",
+  ContactMonitor: "contactMonitor",
+  OwnerInit: "ownerInit",
+  OwnerMonitor: "ownerMonitor",
+  Update: "update",
+} as const;
 export type Operation = (typeof Operation)[keyof typeof Operation];
 
 /** Sends TLS-encoded request bytes for `operation` and returns the response bytes. */
@@ -76,6 +94,41 @@ export interface Contact {
 export interface State {
   readonly checkpoint: Checkpoint | null;
   readonly contact?: Contact | undefined;
+  readonly owner?: Owner | undefined;
+}
+
+/** What a label owner retains about a version (Sections 8.3, 9.1) */
+export interface OwnedVersion {
+  readonly version: number;
+  readonly vrfOutput: Uint8Array;
+  /** Commitment of a version that exists */
+  readonly commitment?: Uint8Array | undefined;
+}
+
+/** Label owner state (Sections 8.3, 9) */
+export interface Owner {
+  readonly binding: Uint8Array;
+  readonly label: Uint8Array;
+  /** Rightmost distinguished entry verified, absent before any */
+  readonly start?: number | undefined;
+  /** Greatest version at `start` and at each of its ancestors to its left, until the label is absent */
+  readonly previous: readonly number[];
+  /** Position of each version created after `start`, ascending */
+  readonly upcoming: readonly number[];
+  /** Contact monitoring map for versions inserted at entries that were not distinguished */
+  readonly monitoring: readonly MonitorMapEntry[];
+  /** VRF outputs and commitments for the ladders the owner verifies */
+  readonly versions: readonly OwnedVersion[];
+}
+
+export interface UpdateResult {
+  readonly state: State & { readonly checkpoint: Checkpoint; readonly owner: Owner };
+  /** Log entry holding the versions */
+  readonly position: number;
+  /** The versions created there, which are someone else's when `values` was disregarded */
+  readonly versions: readonly { readonly version: number; readonly value: Uint8Array }[];
+  /** Whether the log reported existing versions instead of creating the requested ones */
+  readonly disregarded: boolean;
 }
 
 export interface CallOptions {
@@ -125,6 +178,35 @@ export interface Client {
   schedule(state: State): Schedule | undefined;
   /** Contact monitoring. Returns the input state when nothing needs monitoring. */
   monitor(label: Uint8Array | string, state: State, options?: CallOptions): Promise<{ readonly state: State }>;
+  /**
+   * Takes ownership of a label from `start`, an unexpired distinguished entry, or
+   * from the start of the log when absent (Section 13.3). Versions created after
+   * the start are then learned with `update` and no values.
+   */
+  ownerInit(
+    label: Uint8Array | string,
+    state: State,
+    options?: CallOptions & { readonly start?: number | undefined },
+  ): Promise<{ readonly state: State & { readonly checkpoint: Checkpoint; readonly owner: Owner } }>;
+  /**
+   * Creates new versions, or with no values learns versions created elsewhere
+   * (Section 13.5). Call again while `disregarded` is set to catch up.
+   */
+  update(
+    label: Uint8Array | string,
+    values: readonly Uint8Array[],
+    state: State,
+    options?: CallOptions,
+  ): Promise<UpdateResult>;
+  /**
+   * Owner monitoring (Section 13.4). Repeat until `done`, or call `update` with no
+   * values when the log stops at a version the owner does not know yet.
+   */
+  ownerMonitor(
+    label: Uint8Array | string,
+    state: State,
+    options?: CallOptions,
+  ): Promise<{ readonly state: State; readonly done: boolean }>;
 }
 
 export interface ClientOptions {
@@ -308,7 +390,253 @@ export async function createClient(
         return fail(e);
       }
     },
+
+    async ownerInit(label, state, { signal, start } = {}) {
+      const name = toLabel(label);
+      const checkpoint = checkCheckpoint(state.checkpoint, binding);
+      if (start !== undefined && !isUint(start)) throw new KTError(KTErrorCode.InvalidRequest);
+      const last = checkpoint?.treeSize;
+      const bytes = await call(Operation.OwnerInit, encodeOwnerInitRequest({ last, label: name, start }), signal);
+      try {
+        const res = decode(bytes, (r) => decodeOwnerInitResponse(r, vrf.proofLength));
+        const n = treeSize(res.treeHead, last);
+        const greatest = res.greatestVersions;
+        // VRF proofs for version 0 and the search ladders of each greatest version, with
+        // commitments for the versions that exist as of the start (Sections 8.3, 13.3)
+        const versions = [...new Set([0, ...greatest.flatMap(baseLadder)])].sort((a, b) => a - b);
+        const data = ladderData(name, versions, res.binaryLadder, (v) => v <= (greatest[0] ?? -1));
+        const verifier = new Verifier(n, checkpoint ?? undefined, res.init, data);
+        updateView(verifier, last ?? 0);
+        const { list } = ownerInit(verifier, params, start, (i) => greatest[i]);
+        if (greatest.length > list.length) throw new Error("too many greatest versions");
+        const next = await conclude(verifier, res.treeHead, checkpoint, signal);
+        const owner = retainOwner(
+          { binding, label: name, start, previous: greatest, upcoming: [], monitoring: [], versions: [] },
+          data,
+        );
+        return { state: { ...state, checkpoint: next, owner } };
+      } catch (e) {
+        return fail(e);
+      }
+    },
+
+    async update(label, values, state, { signal } = {}) {
+      const name = toLabel(label);
+      const checkpoint = checkCheckpoint(state.checkpoint, binding);
+      if (!state.owner) throw new KTError(KTErrorCode.InvalidState);
+      const owner = checkOwner(state.owner, binding, name);
+      if (!Array.isArray(values) || values.length > 255 || !values.every((v) => v instanceof Uint8Array))
+        throw new KTError(KTErrorCode.InvalidRequest);
+      const last = checkpoint?.treeSize;
+      const history = ownerHistory(owner);
+      const before = history.greatest;
+      const request = encodeUpdateRequest({ last, label: name, greatestVersion: before, values });
+      const bytes = await call(Operation.Update, request, signal);
+      try {
+        const res = decode(bytes, (r) => decodeUpdateResponse(r, vrf.proofLength));
+        const n = treeSize(res.treeHead, last);
+        if (history.lastUpdate !== undefined && res.position <= history.lastUpdate)
+          throw new Error("update is not right of the previous one");
+        const disregarded = res.values.length > 0;
+        const created = disregarded ? res.values : values;
+        if (!created.length || res.openings.length !== created.length) throw new Error("unexpected update info");
+        const after = (before ?? -1) + created.length;
+        if (after > MAX_VERSION) throw new Error("too many versions");
+        // VRF proofs the owner lacks, with commitments only below its greatest version (Section 13.5)
+        const wanted = new Set([
+          ...baseLadder(after),
+          ...(created.length > 1 ? created.map((_, i) => (before ?? -1) + 1 + i) : []),
+        ]);
+        for (const v of before === undefined ? [0] : baseLadder(before)) wanted.delete(v);
+        const fresh = ladderData(
+          name,
+          [...wanted].sort((a, b) => a - b),
+          res.binaryLadder,
+          (v) => v < (before ?? -1),
+        );
+        const data = new Map<number, LadderData>(owner.versions.map((e) => [e.version, e]));
+        for (const [v, d] of fresh)
+          data.set(v, { ...data.get(v), ...d, commitment: d.commitment ?? data.get(v)?.commitment });
+        created.forEach((value, i) => {
+          const v = (before ?? -1) + 1 + i;
+          const d = data.get(v);
+          if (!d) throw new Error("missing VRF output for a new version");
+          data.set(v, { vrfOutput: d.vrfOutput, commitment: commitment(res.openings[i]!, name, v, value) });
+        });
+        const verifier = new Verifier(n, checkpoint ?? undefined, res.update, data);
+        updateView(verifier, last ?? 0);
+        const distinguished = labelUpdate(verifier, params, history, res.position, created.length);
+        const next = await conclude(verifier, res.treeHead, checkpoint, signal);
+        // An update at an entry that is not distinguished is also contact monitored,
+        // replacing entries for lesser versions on its path to the right (Section 9.1)
+        let monitoring = owner.monitoring;
+        if (!distinguished) {
+          const right = new Set(ancestors(res.position, n).filter((a) => a > res.position));
+          const map = new Map(
+            monitoring
+              .filter((e) => !(right.has(e.position) && e.version <= after))
+              .map((e) => [e.position, e.version]),
+          );
+          map.set(res.position, after);
+          monitoring = shrink(map, n);
+        }
+        const updated = retainOwner(
+          { ...owner, upcoming: [...owner.upcoming, ...created.map(() => res.position)], monitoring },
+          data,
+        );
+        return {
+          state: { ...state, checkpoint: next, owner: updated },
+          position: res.position,
+          versions: created.map((value, i) => ({ version: (before ?? -1) + 1 + i, value })),
+          disregarded,
+        };
+      } catch (e) {
+        return fail(e);
+      }
+    },
+
+    async ownerMonitor(label, state, { signal } = {}) {
+      const name = toLabel(label);
+      const checkpoint = checkCheckpoint(state.checkpoint, binding);
+      if (!checkpoint || !state.owner) throw new KTError(KTErrorCode.InvalidState);
+      const owner = checkOwner(state.owner, binding, name);
+      if (owner.monitoring.some((e) => e.position >= checkpoint.treeSize)) throw new KTError(KTErrorCode.InvalidState);
+      const last = checkpoint.treeSize;
+      const history = ownerHistory(owner);
+      const request = encodeOwnerMonitorRequest({
+        last,
+        label: name,
+        entries: owner.monitoring,
+        start: owner.start,
+        greatestVersion: history.greatest,
+      });
+      const bytes = await call(Operation.OwnerMonitor, request, signal);
+      try {
+        const res = decode(bytes, decodeOwnerMonitorResponse);
+        const n = treeSize(res.treeHead, last);
+        const data = new Map<number, LadderData>(owner.versions.map((e) => [e.version, e]));
+        const verifier = new Verifier(n, checkpoint, res.monitor, data);
+        updateView(verifier, last);
+        const updated = contactMonitor(verifier, params, owner.monitoring, { start: owner.start });
+        const verified = ownerMonitor(verifier, params, owner.start, history, () => verifier.exhausted);
+        const next = await conclude(verifier, res.treeHead, checkpoint, signal);
+        const monitoring = shrink(new Map(updated.map((e) => [e.position, e.version])), n);
+        const moved = verified === undefined ? owner : advanceStart(owner, history, verified);
+        const ts = new Map(next.frontier.map((e) => [e.position, e.timestamp]));
+        const view = { n, timestamp: (x: number) => ts.get(x)!, ladder: () => {} };
+        const rightmost = rightmostDistinguished(view, config.reasonableMonitoringWindow);
+        const done = rightmost === undefined || (moved.start !== undefined && moved.start >= rightmost);
+        return { state: { ...state, checkpoint: next, owner: retainOwner({ ...moved, monitoring }, data) }, done };
+      } catch (e) {
+        return fail(e);
+      }
+    },
   };
+
+  /** VRF outputs for `versions` from binary ladder steps, which carry commitments exactly where `committed` says */
+  function ladderData(
+    label: Uint8Array,
+    versions: readonly number[],
+    steps: readonly BinaryLadderStep[],
+    committed: (v: number) => boolean,
+  ): Map<number, LadderData> {
+    if (steps.length !== versions.length) throw new Error("unexpected binary ladder length");
+    const data = new Map<number, LadderData>();
+    versions.forEach((v, i) => {
+      const step = steps[i]!;
+      if ((step.commitment !== undefined) !== committed(v)) throw new Error("unexpected commitment");
+      const vrfOutput = vrfVerify(vrfInput(label, v), step.proof);
+      if (!vrfOutput) throw new Error("invalid VRF proof");
+      data.set(v, { vrfOutput, commitment: step.commitment });
+    });
+    return data;
+  }
+}
+
+/** The owner's view of the label's history, as the algorithms of Sections 8.3 and 9.1 need it */
+function ownerHistory(o: Owner): UpdateHistory {
+  const base = o.previous[0] ?? -1;
+  const left = o.start === undefined ? [] : leftPath(o.start);
+  const at = (x: number): number | undefined => {
+    let v: number;
+    if (o.start !== undefined && x < o.start) {
+      const i = left.indexOf(x);
+      const p = o.previous[i + 1];
+      return p;
+    }
+    v = base;
+    for (const position of o.upcoming) if (position <= x) v++;
+    return v < 0 ? undefined : v;
+  };
+  const greatest = base + o.upcoming.length;
+  return {
+    greatestAt: at,
+    greatest: greatest < 0 ? undefined : greatest,
+    lastUpdate: o.upcoming.at(-1) ?? o.start,
+  };
+}
+
+/** Ancestors of x to its left, nearest first. They do not depend on the tree size. */
+const leftPath = (x: number): number[] =>
+  ancestors(x, x + 1)
+    .filter((a) => a < x)
+    .reverse();
+
+/** Moves the owner's start to a newly verified distinguished entry */
+function advanceStart(o: Owner, history: OwnerHistory, x: number): Owner {
+  const previous: number[] = [];
+  for (const y of [x, ...leftPath(x)]) {
+    const v = history.greatestAt(y);
+    if (v === undefined) break;
+    previous.push(v);
+  }
+  return { ...o, start: x, previous, upcoming: o.upcoming.filter((p) => p > x) };
+}
+
+/** Keeps the VRF outputs and commitments the owner's future ladders need */
+function retainOwner(o: Owner, fresh: ReadonlyMap<number, LadderData>): Owner {
+  const known = new Map<number, LadderData>(o.versions.map((e) => [e.version, e]));
+  for (const [v, d] of fresh)
+    known.set(v, { vrfOutput: d.vrfOutput, commitment: d.commitment ?? known.get(v)?.commitment });
+  const greatest = ownerHistory(o).greatest;
+  const needed = new Set([0, ...o.monitoring.flatMap((e) => monitoringLadder(e.version))]);
+  if (greatest !== undefined)
+    for (let v = o.previous[0] ?? 0; v <= greatest; v++) for (const l of baseLadder(v)) needed.add(l);
+  const versions = [...needed]
+    .sort((a, b) => a - b)
+    .map((version) => {
+      const d = known.get(version);
+      if (!d) throw new Error("missing VRF output for a retained version");
+      return d.commitment
+        ? { version, vrfOutput: d.vrfOutput, commitment: d.commitment }
+        : { version, vrfOutput: d.vrfOutput };
+    });
+  return { ...o, versions };
+}
+
+function checkOwner(o: Owner, binding: Uint8Array, label: Uint8Array): Owner {
+  const ok =
+    typeof o === "object" &&
+    isBytes(o.binding) &&
+    equalBytes(o.binding, binding) &&
+    isBytes(o.label) &&
+    equalBytes(o.label, label) &&
+    (o.start === undefined || isUint(o.start)) &&
+    Array.isArray(o.previous) &&
+    o.previous.every((v, i, a) => isUint(v, MAX_VERSION) && (i === 0 || v <= a[i - 1]!)) &&
+    Array.isArray(o.upcoming) &&
+    o.upcoming.every((p, i, a) => isUint(p) && (i === 0 || p >= a[i - 1]!)) &&
+    Array.isArray(o.monitoring) &&
+    o.monitoring.every((e) => isUint(e.position) && isUint(e.version, MAX_VERSION)) &&
+    Array.isArray(o.versions) &&
+    o.versions.every(
+      (e) =>
+        isUint(e.version, MAX_VERSION) &&
+        isBytes(e.vrfOutput, NH) &&
+        (e.commitment === undefined || isBytes(e.commitment, NH)),
+    );
+  if (!ok) throw new KTError(KTErrorCode.InvalidState);
+  return o;
 }
 
 const toLabel = (label: Uint8Array | string): Uint8Array => {
