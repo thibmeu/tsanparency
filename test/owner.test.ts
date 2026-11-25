@@ -152,6 +152,35 @@ describe.each(SUITE_NAMES)("label owner with %s", (_, cipherSuite) => {
     await monitorUntilDone(w, client, state);
   });
 
+  test("versions at a distinguished entry stay pending until owner monitoring", async () => {
+    for (const [ticks, pending] of [
+      [1, true],
+      [2, false],
+    ] as const) {
+      const w = await world({ cipherSuite }, open);
+      for (let i = 0; i < ticks; i++) await w.log.tick();
+      const client = await owners(w);
+      const state = (await client.ownerInit("alice", client.initialState())).state;
+      // Someone else creates the version, so its value comes from the log
+      await w.log.append({ label: "alice", value: bytes("theirs"), expectedVersion: null });
+      const r = await client.update("alice", [], state);
+      expect([r.disregarded, r.pending]).toEqual([true, pending]);
+      await monitorUntilDone(w, client, r.state);
+    }
+  });
+
+  test("a first batch of 200 versions verifies", async () => {
+    const w = await world({ cipherSuite }, open);
+    await w.log.tick();
+    const client = await owners(w);
+    const state = (await client.ownerInit("alice", client.initialState())).state;
+    const values = Array.from({ length: 200 }, (_, i) => new Uint8Array([i]));
+    const r = await client.update("alice", values, state);
+    expect(r.versions).toHaveLength(200);
+    const reader = await w.client("bob");
+    expect((await reader.search("alice", reader.initialState(), { version: 150 })).value).toEqual(values[150]);
+  });
+
   test("owner operations need authorization", async () => {
     const w = await world({ cipherSuite });
     await w.log.tick();

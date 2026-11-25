@@ -110,7 +110,7 @@ export class Reader {
   /** Fixed-length bytes, copied so callers may retain them safely. */
   bytes(n: number): Uint8Array {
     const at = this.#take(n);
-    return this.#buf.slice(at, at + n);
+    return copy(this.#buf.subarray(at, at + n));
   }
   opaque(prefix: 1 | 2 | 4, max = Infinity): Uint8Array {
     const n = this.#lenPrefix(prefix);
@@ -143,6 +143,9 @@ export class Reader {
 }
 
 /** Decodes all of `buf` with `fn`. Trailing bytes are an error. */
+/** An owned copy, as a plain Uint8Array. Node's Buffer.slice shares memory instead. */
+export const copy = (b: Uint8Array): Uint8Array => new Uint8Array(b);
+
 export function decode<T>(buf: Uint8Array, fn: (r: Reader) => T): T {
   const r = new Reader(buf);
   const v = fn(r);

@@ -4,7 +4,8 @@ import { type PrefixProof, type PrefixSearchResult, ResultType } from "./prefix.
 import { DecodeError, type Reader, Writer } from "./tls.ts";
 
 /** A binary ladder never has more than 65 lookups. Bounding counts keeps hostile lengths cheap. */
-const MAX_RESULTS = 128;
+/** Results per prefix proof, enough for every new version of a 255 value update */
+const MAX_RESULTS = 256;
 const MAX_KEY_BITS = 8 * NH;
 
 export interface TreeHead {

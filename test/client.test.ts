@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { KTErrorCode, isKTError } from "../src/index.ts";
+import { decode } from "../src/tls.ts";
 import { RMW, world } from "./harness.ts";
 
 const text = (b: Uint8Array) => new TextDecoder().decode(b);
@@ -118,6 +119,31 @@ describe("search and monitor against an honest log", () => {
     open = false;
     const denied = await client.monitor("alice", alice.state).catch((e) => e);
     expect(isKTError(denied, KTErrorCode.Unauthorized)).toBe(true);
+  });
+
+  test("looking up an older version of a batch keeps monitoring the greatest", async () => {
+    const w = await world();
+    await w.log.tick();
+    await w.log.tick();
+    await w.log.append({ label: "alice", values: [bytes("a0"), bytes("a1"), bytes("a2")], expectedVersion: null });
+    const client = await w.client("bob");
+    const greatest = await client.search("alice", client.initialState());
+    expect(greatest.state.contact.monitoring).toEqual([{ position: 2, version: 2 }]);
+    const older = await client.search("alice", greatest.state, { version: 0 });
+    expect(older.state.contact.monitoring).toEqual([{ position: 2, version: 2 }]);
+  });
+
+  test.skipIf(typeof globalThis.Buffer !== "function")("reused Node buffers do not change stored values", async () => {
+    const w = await world();
+    const value = Buffer.from("v0");
+    await w.log.append({ label: Buffer.from("alice"), value, expectedVersion: null });
+    value.fill(0);
+    const client = await w.client("bob");
+    expect(text((await client.search("alice", client.initialState())).value)).toBe("v0");
+    const wire = Buffer.from([0, 2, 0x61, 0x62]);
+    const decoded = decode(wire, (r) => r.opaque(2));
+    wire.fill(0);
+    expect(text(decoded)).toBe("ab");
   });
 
   test("reuses the advertised head when nothing changed", async () => {

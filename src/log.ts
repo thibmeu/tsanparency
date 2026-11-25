@@ -42,7 +42,7 @@ import {
 } from "./messages.ts";
 import { type Node, insert, rootHash } from "./prefix.ts";
 import { type StoredVersion, type Store, memoryStore } from "./store.ts";
-import { type Reader, decode } from "./tls.ts";
+import { type Reader, copy, decode } from "./tls.ts";
 import { Operation } from "./client.ts";
 
 export interface Authorization {
@@ -324,6 +324,8 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
     pendingWrites++;
     const run = writes.then(() => {
       signal?.throwIfAborted();
+      // A write queued before the log broke must not sign the history that broke it
+      if (broken) throw broken;
       return work();
     });
     writes = run.then(
@@ -600,8 +602,8 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
     },
 
     async append(update, { signal } = {}) {
-      const label = typeof update.label === "string" ? new TextEncoder().encode(update.label) : update.label.slice();
-      const values = ("values" in update ? update.values : [update.value]).map((v) => v.slice());
+      const label = typeof update.label === "string" ? new TextEncoder().encode(update.label) : copy(update.label);
+      const values = ("values" in update ? update.values : [update.value]).map(copy);
       const expected = update.expectedVersion;
       if (
         label.length > 255 ||

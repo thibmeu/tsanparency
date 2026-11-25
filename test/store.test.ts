@@ -88,6 +88,27 @@ describe.each(SUITE_NAMES)("durable store with %s", (_, cipherSuite) => {
     await expect(client.search("alice", client.initialState())).rejects.toThrow();
   });
 
+  test("a write queued behind a failed catch-up does not run", async () => {
+    const store = memoryStore();
+    const a = await world({ cipherSuite }, { store });
+    await a.log.append({ label: "alice", value: bytes("a0"), expectedVersion: null });
+    let appends = 0;
+    const forger: Store = {
+      read: (from) => store.read(from),
+      async append(p, e) {
+        appends++;
+        await store.append(p, { ...e, signature: new Uint8Array(e.signature.length) });
+        throw new Error("lost connection");
+      },
+    };
+    const b = await world({ cipherSuite }, { store: forger });
+    const first = b.log.append({ label: "alice", value: bytes("b1"), expectedVersion: 0 });
+    const queued = b.log.append({ label: "bob", value: bytes("b0"), expectedVersion: null });
+    await expect(first).rejects.toThrow();
+    await expect(queued).rejects.toThrow("valid log");
+    expect(appends).toBe(1);
+  });
+
   test("an append that stored before failing still succeeds", async () => {
     const store = memoryStore();
     const flaky: Store = {

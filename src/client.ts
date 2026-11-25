@@ -46,7 +46,7 @@ import {
   encodeContactMonitorRequest,
   encodeSearchRequest,
 } from "./messages.ts";
-import { decode } from "./tls.ts";
+import { copy, decode } from "./tls.ts";
 
 export const Operation = {
   Search: "search",
@@ -135,6 +135,11 @@ export interface UpdateResult {
   readonly versions: readonly { readonly version: number; readonly value: Uint8Array }[];
   /** Whether the log reported existing versions instead of creating the requested ones */
   readonly disregarded: boolean;
+  /**
+   * Whether inclusion of the versions is still unproven. At a distinguished entry
+   * the log proves them later, through owner monitoring (Section 9.1).
+   */
+  readonly pending: boolean;
 }
 
 export interface CallOptions {
@@ -349,11 +354,12 @@ export async function createClient(
         if (prior) checkConsistent(prior, data);
 
         // The terminal entry must be monitored when it lies right of the rightmost
-        // distinguished entry (Section 6.3). An entry already at that position holds
-        // a lesser version, which the new one supersedes as in Section 8.2.
+        // distinguished entry (Section 6.3). Versions created together share an entry,
+        // where the greater version supersedes the lesser as in Section 8.2.
         const map = new Map((prior?.monitoring ?? []).map((e) => [e.position, e.version]));
         const tracked = [...map.values()].includes(t);
-        if ((distinguished === undefined || terminal > distinguished) && !tracked) map.set(terminal, t);
+        const pending = distinguished === undefined || terminal > distinguished;
+        if (pending && !tracked && !((map.get(terminal) ?? -1) > t)) map.set(terminal, t);
         const monitoring = shrink(map, n);
         const contact: Contact = {
           binding,
@@ -434,6 +440,7 @@ export async function createClient(
       const owner = checkOwner(state.owner, binding, name);
       if (!Array.isArray(values) || values.length > 255 || !values.every((v) => v instanceof Uint8Array))
         throw new KTError(KTErrorCode.InvalidRequest);
+      values = values.map(copy);
       const last = checkpoint?.treeSize;
       const history = ownerHistory(owner);
       const before = history.greatest;
@@ -510,6 +517,7 @@ export async function createClient(
           position: res.position,
           versions: created.map((value, i) => ({ version: (before ?? -1) + 1 + i, value })),
           disregarded,
+          pending: distinguished,
         };
       } catch (e) {
         return fail(e);
@@ -676,7 +684,7 @@ function checkOwner(o: Owner, binding: Uint8Array, label: Uint8Array): Owner {
 const toLabel = (label: Uint8Array | string): Uint8Array => {
   const b = typeof label === "string" ? utf8ToBytes(label) : label;
   if (!(b instanceof Uint8Array) || b.length > 255) throw new KTError(KTErrorCode.InvalidRequest);
-  return b.slice();
+  return copy(b);
 };
 
 /**
