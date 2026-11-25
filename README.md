@@ -3,7 +3,7 @@
 Key Transparency ([draft-ietf-keytrans-protocol-06](https://datatracker.ietf.org/doc/html/draft-ietf-keytrans-protocol-06)) for TypeScript: a client and an embeddable log, in Contact Monitoring mode.
 
 - Cipher suites `KT_128_SHA256_P256` and `KT_128_SHA256_Ed25519`
-- Greatest-version Search and Contact Monitor
+- Greatest-version and fixed-version Search, and Contact Monitor
 - Runs on Node, Bun, browsers and Cloudflare Workers, using Web Crypto for signatures
 
 Interoperates with [Bren2010/katie](https://github.com/Bren2010/katie) and uses test vectors published by [OR13/kt](https://github.com/OR13/kt).
@@ -23,6 +23,11 @@ const client = await createClient(config, (operation, request, { signal }) =>
 );
 const found = await client.search("alice@example.com", client.initialState());
 await persist(found.state); // before using the key
+const older = await client.search("alice@example.com", found.state, { version: 0 });
+
+// Monitor when due: client.schedule(state) says when monitoring can complete an entry,
+// and by when it must happen if the log has a maximum lifetime
+const due = client.schedule(found.state);
 const checked = await client.monitor("alice@example.com", found.state);
 ```
 

@@ -8,7 +8,9 @@ import {
   type View,
   Verifier,
   contactMonitor,
+  fixedVersionSearch,
   greatestVersionSearch,
+  rightmostDistinguished,
   updateView,
 } from "./combined.ts";
 import {
@@ -21,7 +23,7 @@ import {
   vrfInput,
 } from "./crypto.ts";
 import { KTError, KTErrorCode, isKTError } from "./errors.ts";
-import { frontier } from "./ibst.ts";
+import { ancestors, frontier } from "./ibst.ts";
 import { MAX_VERSION, baseLadder, monitoringLadder } from "./ladder.ts";
 import { fullSubtrees, rootFromFullSubtrees } from "./logtree.ts";
 import {
@@ -80,6 +82,27 @@ export interface CallOptions {
   readonly signal?: AbortSignal | undefined;
 }
 
+export interface Schedule {
+  /**
+   * Monitoring can complete an entry once the log's rightmost timestamp reaches
+   * this: a new distinguished entry needs one RMW past the rightmost one. It is 0
+   * when an entry can complete now. If a monitor call leaves the map unchanged,
+   * back off before calling again.
+   */
+  readonly after: number;
+  /**
+   * Monitor before this, after which entries monitoring inspects may have expired
+   * (Section 7.1), allowing for the log clock running maxAhead early. Only set when
+   * the log has a maximum lifetime.
+   */
+  readonly before?: number;
+}
+
+export interface SearchOptions extends CallOptions {
+  /** Looks up this version instead of the greatest one (Section 7) */
+  readonly version?: number | undefined;
+}
+
 export interface SearchResult {
   readonly value: Uint8Array;
   readonly version: number;
@@ -89,8 +112,17 @@ export interface SearchResult {
 export interface Client {
   /** State for a client that has never talked to this log. Use only on first contact. */
   initialState(): State;
-  /** Greatest-version search. Persist `state` before using `value`. */
-  search(label: Uint8Array | string, state: State, options?: CallOptions): Promise<SearchResult>;
+  /**
+   * Greatest-version search, or fixed-version search when `version` is set.
+   * Persist `state` before using `value`.
+   */
+  search(label: Uint8Array | string, state: State, options?: SearchOptions): Promise<SearchResult>;
+  /**
+   * When contact monitoring is due for `state`, or undefined when nothing needs
+   * monitoring. Times are log timestamps in milliseconds since the epoch, which an
+   * honest log keeps close to the local clock.
+   */
+  schedule(state: State): Schedule | undefined;
   /** Contact monitoring. Returns the input state when nothing needs monitoring. */
   monitor(label: Uint8Array | string, state: State, options?: CallOptions): Promise<{ readonly state: State }>;
 }
@@ -174,31 +206,57 @@ export async function createClient(
   return {
     initialState: () => ({ checkpoint: null }),
 
-    async search(label, state, { signal } = {}) {
+    schedule(state) {
+      const checkpoint = checkCheckpoint(state.checkpoint, binding);
+      const map = state.contact?.monitoring ?? [];
+      if (!checkpoint || !map.length) return undefined;
+      const rmw = config.reasonableMonitoringWindow;
+      const ts = new Map(checkpoint.frontier.map((e) => [e.position, e.timestamp]));
+      const view = { n: checkpoint.treeSize, timestamp: (x: number) => ts.get(x)!, ladder: () => {} };
+      const d = rightmostDistinguished(view, rmw);
+      // Frontier entries up to the rightmost distinguished one are all distinguished,
+      // so an entry at or left of it completes on the next call
+      const after = d !== undefined && map.some((e) => e.position <= d) ? 0 : (d === undefined ? 0 : ts.get(d)!) + rmw;
+      const ml = config.maximumLifetime;
+      if (ml === undefined) return { after };
+      // Timestamps grow with position, so the newest frontier timestamp at or left of
+      // an entry bounds its own from below, and entries monitoring inspects are newer
+      const bounds = map.flatMap((e) => {
+        const f = checkpoint.frontier.filter((x) => x.position <= e.position).at(-1);
+        return f ? [f.timestamp + ml - config.maxAhead] : [];
+      });
+      return bounds.length ? { after, before: Math.min(...bounds) } : { after };
+    },
+
+    async search(label, state, { signal, version } = {}) {
+      if (version !== undefined && !isUint(version, MAX_VERSION)) throw new KTError(KTErrorCode.InvalidRequest);
       const name = toLabel(label);
       const checkpoint = checkCheckpoint(state.checkpoint, binding);
       const prior = state.contact && checkContact(state.contact, binding, name);
       const last = checkpoint?.treeSize;
-      const bytes = await call(Operation.Search, encodeSearchRequest({ last, label: name }), signal);
+      const bytes = await call(Operation.Search, encodeSearchRequest({ last, label: name, version }), signal);
       try {
-        const res = decode(bytes, (r) => decodeSearchResponse(r, vrf.proofLength));
+        const res = decode(bytes, (r) => decodeSearchResponse(r, vrf.proofLength, version));
         const t = res.version;
         const versions = baseLadder(t);
         if (res.binaryLadder.length !== versions.length) throw new Error("unexpected binary ladder length");
         const n = treeSize(res.treeHead, last);
-        if (prior && t < prior.version) throw new Error("greatest version went backwards");
+        if (prior && version === undefined && t < prior.version) throw new Error("greatest version went backwards");
         const target = commitment(res.opening, name, t, res.value);
         const data = new Map<number, LadderData>();
         for (const [i, v] of versions.entries()) {
           const step = res.binaryLadder[i]!;
-          if ((step.commitment !== undefined) !== v < t) throw new Error("unexpected commitment");
+          // Commitments cover every existing version but the target (Section 13.1)
+          const present = step.commitment !== undefined;
+          if (v === t ? present : v < t && !present) throw new Error("unexpected commitment");
           const vrfOutput = vrfVerify(vrfInput(name, v), step.proof);
           if (!vrfOutput) throw new Error("invalid VRF proof");
           data.set(v, { vrfOutput, commitment: v === t ? target : step.commitment });
         }
         const verifier = new Verifier(n, checkpoint ?? undefined, res.search, data);
         updateView(verifier, last ?? 0);
-        const { terminal, distinguished } = greatestVersionSearch(verifier, params, t);
+        const { terminal, distinguished } =
+          version === undefined ? greatestVersionSearch(verifier, params, t) : fixedVersionSearch(verifier, params, t);
         const next = await conclude(verifier, res.treeHead, checkpoint, signal);
         if (prior) checkConsistent(prior, data);
 
@@ -208,14 +266,13 @@ export async function createClient(
         const map = new Map((prior?.monitoring ?? []).map((e) => [e.position, e.version]));
         const tracked = [...map.values()].includes(t);
         if ((distinguished === undefined || terminal > distinguished) && !tracked) map.set(terminal, t);
-        const monitoring = [...map]
-          .map(([position, version]) => ({ position, version }))
-          .sort((a, b) => a.position - b.position);
+        const monitoring = shrink(map, n);
         const contact: Contact = {
           binding,
           label: name,
-          version: t,
-          commitment: target,
+          ...(prior && prior.version > t
+            ? { version: prior.version, commitment: prior.commitment }
+            : { version: t, commitment: target }),
           monitoring,
           ladder: ladderFor(monitoring, prior?.ladder ?? [], data),
         };
@@ -242,8 +299,9 @@ export async function createClient(
         const data = new Map(contact.ladder.map((e) => [e.version, e]));
         const verifier = new Verifier(n, checkpoint, res.monitor, data);
         updateView(verifier, last);
-        const monitoring = contactMonitor(verifier, params, contact.monitoring);
+        const updated = contactMonitor(verifier, params, contact.monitoring);
         const next = await conclude(verifier, res.treeHead, checkpoint, signal);
+        const monitoring = shrink(new Map(updated.map((e) => [e.position, e.version])), n);
         const ladder = ladderFor(monitoring, contact.ladder, data);
         return { state: { checkpoint: next, contact: { ...contact, monitoring, ladder } } };
       } catch (e) {
@@ -258,6 +316,23 @@ const toLabel = (label: Uint8Array | string): Uint8Array => {
   if (!(b instanceof Uint8Array) || b.length > 255) throw new KTError(KTErrorCode.InvalidRequest);
   return b.slice();
 };
+
+/**
+ * Drops an entry whose nearest ancestor to its right already holds a greater
+ * version, which is what the next contact monitoring step would do anyway
+ * (Section 8.2, step 3.1.1).
+ */
+function shrink(map: ReadonlyMap<number, number>, n: number): MonitorMapEntry[] {
+  return [...map]
+    .filter(([position, version]) => {
+      const parent = ancestors(position, n)
+        .filter((x) => x > position)
+        .at(-1);
+      return parent === undefined || !((map.get(parent) ?? -1) > version);
+    })
+    .map(([position, version]) => ({ position, version }))
+    .sort((a, b) => a.position - b.position);
+}
 
 /** Rejects verified data contradicting what this contact already saw for the same versions */
 function checkConsistent(prior: Contact, fresh: ReadonlyMap<number, LadderData>): void {

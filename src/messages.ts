@@ -27,6 +27,8 @@ export interface BinaryLadderStep {
 export interface SearchRequest {
   readonly last?: number | undefined;
   readonly label: Uint8Array;
+  /** Absent for a greatest-version search */
+  readonly version?: number | undefined;
 }
 
 export interface SearchResponse {
@@ -113,20 +115,22 @@ function readCombined(r: Reader): CombinedTreeProof {
 }
 
 export function encodeSearchRequest(req: SearchRequest): Uint8Array {
-  return writeLast(new Writer(), req.last).opaque(1, req.label).u8(0).finish();
+  const w = writeLast(new Writer(), req.last).opaque(1, req.label);
+  return (req.version === undefined ? w.u8(0) : w.u8(1).u32(req.version)).finish();
 }
 
 export function decodeSearchRequest(r: Reader): SearchRequest {
   const last = readLast(r);
   const label = r.opaque(1);
-  if (r.present()) throw new DecodeError("fixed-version search is not supported");
-  return { last, label };
+  return { last, label, version: r.present() ? r.u32() : undefined };
 }
 
-export function encodeSearchResponse(res: SearchResponse): Uint8Array {
+/** `fixed` omits the version, which a fixed-version request already names */
+export function encodeSearchResponse(res: SearchResponse, fixed = false): Uint8Array {
   const w = new Writer();
   writeTreeHead(w, res.treeHead);
-  w.u32(res.version).bytes(res.opening).opaque(4, res.value);
+  if (!fixed) w.u32(res.version);
+  w.bytes(res.opening).opaque(4, res.value);
   w.count(1, res.binaryLadder.length);
   for (const step of res.binaryLadder) {
     w.bytes(step.proof);
@@ -137,10 +141,13 @@ export function encodeSearchResponse(res: SearchResponse): Uint8Array {
   return w.finish();
 }
 
-/** `proofLength` is VRF.Np for the configured cipher suite */
-export function decodeSearchResponse(r: Reader, proofLength: number): SearchResponse {
+/**
+ * `proofLength` is VRF.Np for the configured cipher suite, and `fixed` the
+ * version of a fixed-version request, which the response then omits
+ */
+export function decodeSearchResponse(r: Reader, proofLength: number, fixed?: number): SearchResponse {
   const treeHead = readTreeHead(r);
-  const version = r.u32();
+  const version = fixed ?? r.u32();
   const opening = r.bytes(NC);
   const value = r.opaque(4);
   const binaryLadder = Array.from({ length: r.count(1, proofLength + 1) }, () => ({
@@ -172,4 +179,156 @@ export function encodeContactMonitorResponse(res: ContactMonitorResponse): Uint8
 
 export function decodeContactMonitorResponse(r: Reader): ContactMonitorResponse {
   return { treeHead: readTreeHead(r), monitor: readCombined(r) };
+}
+
+export interface OwnerInitRequest {
+  readonly last?: number | undefined;
+  readonly label: Uint8Array;
+  /** Distinguished entry where ownership starts, or absent for the start of the log */
+  readonly start?: number | undefined;
+}
+
+export interface OwnerInitResponse {
+  readonly treeHead?: TreeHead | undefined;
+  /** Greatest version at each listed entry, until the first where the label does not exist */
+  readonly greatestVersions: readonly number[];
+  readonly binaryLadder: readonly BinaryLadderStep[];
+  readonly init: CombinedTreeProof;
+}
+
+export interface OwnerMonitorRequest {
+  readonly last?: number | undefined;
+  readonly label: Uint8Array;
+  readonly entries: readonly MonitorMapEntry[];
+  /** Rightmost distinguished entry the owner verified */
+  readonly start?: number | undefined;
+  readonly greatestVersion?: number | undefined;
+}
+
+export interface OwnerMonitorResponse {
+  readonly treeHead?: TreeHead | undefined;
+  readonly monitor: CombinedTreeProof;
+}
+
+export interface UpdateRequest {
+  readonly last?: number | undefined;
+  readonly label: Uint8Array;
+  readonly greatestVersion?: number | undefined;
+  readonly values: readonly Uint8Array[];
+}
+
+export interface UpdateResponse {
+  readonly treeHead?: TreeHead | undefined;
+  /** Log entry where the versions were inserted */
+  readonly position: number;
+  /** Values of existing versions, when the request's values were disregarded */
+  readonly values: readonly Uint8Array[];
+  /** Commitment opening of each new version */
+  readonly openings: readonly Uint8Array[];
+  readonly binaryLadder: readonly BinaryLadderStep[];
+  readonly update: CombinedTreeProof;
+}
+
+const writeOptU64 = (w: Writer, v: number | undefined): Writer => (v === undefined ? w.u8(0) : w.u8(1).u64(v));
+const writeOptU32 = (w: Writer, v: number | undefined): Writer => (v === undefined ? w.u8(0) : w.u8(1).u32(v));
+
+function writeLadder(w: Writer, prefix: 1 | 2, steps: readonly BinaryLadderStep[]): void {
+  w.count(prefix, steps.length);
+  for (const step of steps) {
+    w.bytes(step.proof);
+    if (step.commitment) w.u8(1).bytes(step.commitment);
+    else w.u8(0);
+  }
+}
+
+const readLadder = (r: Reader, prefix: 1 | 2, proofLength: number): BinaryLadderStep[] =>
+  Array.from({ length: r.count(prefix, proofLength + 1) }, () => ({
+    proof: r.bytes(proofLength),
+    commitment: r.present() ? r.bytes(NH) : undefined,
+  }));
+
+export function encodeOwnerInitRequest(req: OwnerInitRequest): Uint8Array {
+  return writeOptU64(writeLast(new Writer(), req.last).opaque(1, req.label), req.start).finish();
+}
+
+export function decodeOwnerInitRequest(r: Reader): OwnerInitRequest {
+  return { last: readLast(r), label: r.opaque(1), start: r.present() ? r.u64() : undefined };
+}
+
+export function encodeOwnerInitResponse(res: OwnerInitResponse): Uint8Array {
+  const w = new Writer();
+  writeTreeHead(w, res.treeHead);
+  w.count(1, res.greatestVersions.length);
+  for (const v of res.greatestVersions) w.u32(v);
+  writeLadder(w, 2, res.binaryLadder);
+  writeCombined(w, res.init);
+  return w.finish();
+}
+
+export function decodeOwnerInitResponse(r: Reader, proofLength: number): OwnerInitResponse {
+  const treeHead = readTreeHead(r);
+  const greatestVersions = Array.from({ length: r.count(1, 4) }, () => r.u32());
+  return { treeHead, greatestVersions, binaryLadder: readLadder(r, 2, proofLength), init: readCombined(r) };
+}
+
+export function encodeOwnerMonitorRequest(req: OwnerMonitorRequest): Uint8Array {
+  const w = writeLast(new Writer(), req.last).opaque(1, req.label).count(1, req.entries.length);
+  for (const e of req.entries) w.u64(e.position).u32(e.version);
+  return writeOptU32(writeOptU64(w, req.start), req.greatestVersion).finish();
+}
+
+export function decodeOwnerMonitorRequest(r: Reader): OwnerMonitorRequest {
+  const last = readLast(r);
+  const label = r.opaque(1);
+  const entries = Array.from({ length: r.count(1, 12) }, () => ({ position: r.u64(), version: r.u32() }));
+  const start = r.present() ? r.u64() : undefined;
+  return { last, label, entries, start, greatestVersion: r.present() ? r.u32() : undefined };
+}
+
+export function encodeOwnerMonitorResponse(res: OwnerMonitorResponse): Uint8Array {
+  const w = new Writer();
+  writeTreeHead(w, res.treeHead);
+  writeCombined(w, res.monitor);
+  return w.finish();
+}
+
+export const decodeOwnerMonitorResponse = (r: Reader): OwnerMonitorResponse => ({
+  treeHead: readTreeHead(r),
+  monitor: readCombined(r),
+});
+
+export function encodeUpdateRequest(req: UpdateRequest): Uint8Array {
+  const w = writeOptU32(writeLast(new Writer(), req.last).opaque(1, req.label), req.greatestVersion);
+  w.count(1, req.values.length);
+  for (const v of req.values) w.opaque(4, v);
+  return w.finish();
+}
+
+export function decodeUpdateRequest(r: Reader): UpdateRequest {
+  const last = readLast(r);
+  const label = r.opaque(1);
+  const greatestVersion = r.present() ? r.u32() : undefined;
+  const values = Array.from({ length: r.count(1, 4) }, () => r.opaque(4));
+  return { last, label, greatestVersion, values };
+}
+
+/** UpdateResponse for Contact Monitoring mode, where UpdateInfo is only the opening */
+export function encodeUpdateResponse(res: UpdateResponse): Uint8Array {
+  const w = new Writer();
+  writeTreeHead(w, res.treeHead);
+  w.u64(res.position).count(1, res.values.length);
+  for (const v of res.values) w.opaque(4, v);
+  w.count(1, res.openings.length);
+  for (const o of res.openings) w.bytes(o);
+  writeLadder(w, 1, res.binaryLadder);
+  writeCombined(w, res.update);
+  return w.finish();
+}
+
+export function decodeUpdateResponse(r: Reader, proofLength: number): UpdateResponse {
+  const treeHead = readTreeHead(r);
+  const position = r.u64();
+  const values = Array.from({ length: r.count(1, 4) }, () => r.opaque(4));
+  const openings = Array.from({ length: r.count(1, NC) }, () => r.bytes(NC));
+  return { treeHead, position, values, openings, binaryLadder: readLadder(r, 1, proofLength), update: readCombined(r) };
 }

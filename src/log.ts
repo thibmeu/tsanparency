@@ -1,6 +1,13 @@
 /** In-memory Transparency Log serving Search and Contact Monitor (Sections 9, 13). */
 import { bytesToHex, equalBytes } from "@noble/curves/utils.js";
-import { type Snapshot, Prover, contactMonitor, greatestVersionSearch, updateView } from "./combined.ts";
+import {
+  type Snapshot,
+  Prover,
+  contactMonitor,
+  fixedVersionSearch,
+  greatestVersionSearch,
+  updateView,
+} from "./combined.ts";
 import {
   type Configuration,
   NC,
@@ -198,27 +205,34 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
 
   const grantKey = (label: Uint8Array, version: number) => `${bytesToHex(label)}:${version}`;
 
-  async function search(principal: string, label: Uint8Array, last: number | undefined, current: Head) {
+  async function search(principal: string, req: SearchRequest, current: Head) {
+    const { label, last } = req;
     const n = current.treeSize;
-    const { state, greatest: t } = lookup(label, n);
+    const { state, greatest } = lookup(label, n);
+    const t = req.version ?? greatest;
+    if (t > greatest) throw new KTError(KTErrorCode.NotFound);
     const prover = new Prover(snapshot(n), last ?? 0, (v) => vrfOf(state, label, v).output);
     updateView(prover, last ?? 0);
-    greatestVersionSearch(prover, params, t);
+    if (req.version === undefined) greatestVersionSearch(prover, params, t);
+    else fixedVersionSearch(prover, params, t);
     const target = state.versions[t]!;
     let granted = grants.get(principal);
     if (!granted) grants.set(principal, (granted = new Set()));
     granted.add(grantKey(label, t));
-    return encodeSearchResponse({
-      treeHead: last === n ? undefined : current,
-      version: t,
-      opening: target.opening,
-      value: target.value,
-      binaryLadder: baseLadder(t).map((v) => ({
-        proof: vrfOf(state, label, v).proof,
-        commitment: v < t ? state.versions[v]!.commitment : undefined,
-      })),
-      search: prover.finish(),
-    });
+    return encodeSearchResponse(
+      {
+        treeHead: last === n ? undefined : current,
+        version: t,
+        opening: target.opening,
+        value: target.value,
+        binaryLadder: baseLadder(t).map((v) => ({
+          proof: vrfOf(state, label, v).proof,
+          commitment: v !== t && v <= greatest ? state.versions[v]!.commitment : undefined,
+        })),
+        search: prover.finish(),
+      },
+      req.version !== undefined,
+    );
   }
 
   function monitor(req: ContactMonitorRequest, current: Head) {
@@ -309,7 +323,9 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
         signal?.throwIfAborted();
         return entries
           ? monitor({ last: req.last, label: req.label, entries }, current)
-          : await search(principal, req.label, req.last, current);
+          : await search(principal, req, current).catch((e) => {
+              throw e instanceof KTError ? e : new KTError(KTErrorCode.InvalidRequest, { cause: e });
+            });
       } finally {
         activeReads--;
       }

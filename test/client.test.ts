@@ -54,6 +54,25 @@ describe("search and monitor against an honest log", () => {
     expect(c.state.contact.monitoring).toEqual([{ position: 5, version: 4 }]);
   });
 
+  test("an entry covered by a greater version at its nearest right ancestor is dropped", async () => {
+    const w = await world();
+    const append = async (value: string, expectedVersion: number | null) => {
+      w.clock.now += 10;
+      await w.log.append({ label: "alice", value: bytes(value), expectedVersion });
+    };
+    for (let v = 0; v < 3; v++) await append(`v${v}`, v ? v - 1 : null);
+    w.clock.now += 10;
+    await w.log.tick();
+    await append("v3", 2);
+    const client = await w.client("bob");
+    const a = await client.search("alice", client.initialState());
+    expect(a.state.contact.monitoring).toEqual([{ position: 4, version: 3 }]);
+    await append("v4", 3);
+    const b = await client.search("alice", a.state);
+    expect(b.state.contact.monitoring).toEqual([{ position: 5, version: 4 }]);
+    expect(b.state.contact.ladder.map((e) => e.version)).toEqual([0, 1, 3, 4]);
+  });
+
   test("reuses the advertised head when nothing changed", async () => {
     const w = await world();
     await w.log.append({ label: "alice", value: bytes("k"), expectedVersion: null });

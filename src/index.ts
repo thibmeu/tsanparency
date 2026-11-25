@@ -6,6 +6,8 @@ export {
   type Contact,
   type Exchange,
   type LadderEntry,
+  type Schedule,
+  type SearchOptions,
   type SearchResult,
   type State,
   Operation,

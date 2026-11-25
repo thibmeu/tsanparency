@@ -12,7 +12,8 @@ type Op =
   | { kind: "append"; label: Label; advance: number }
   | { kind: "tick"; advance: number }
   | { kind: "search"; who: number; label: Label }
-  | { kind: "monitor"; who: number; label: Label };
+  | { kind: "monitor"; who: number; label: Label }
+  | { kind: "fixed"; who: number; label: Label; version: number };
 
 const label = fc.constantFrom(...LABELS);
 const advance = fc.integer({ min: 0, max: 2 * RMW });
@@ -22,6 +23,7 @@ const op: fc.Arbitrary<Op> = fc.oneof(
   fc.record({ kind: fc.constant("tick" as const), advance }),
   fc.record({ kind: fc.constant("search" as const), who, label }),
   fc.record({ kind: fc.constant("monitor" as const), who, label }),
+  fc.record({ kind: fc.constant("fixed" as const), who, label, version: fc.nat({ max: 6 }) }),
 );
 
 /** A user's persisted state: one shared checkpoint plus a contact per label. */
@@ -73,6 +75,16 @@ async function replay(
       expect(result).not.toBeInstanceOf(Error);
       expect(new TextDecoder().decode(result.value)).toBe(versions.at(-1));
       expect(result.version).toBe(versions.length - 1);
+      commit(store, o.label, result.state);
+    } else if (o.kind === "fixed") {
+      const versions = model.get(o.label);
+      const result = await client.search(o.label, stateFor(store, o.label), { version: o.version }).catch((e) => e);
+      if (!versions || o.version >= versions.length) {
+        expect(isKTError(result, KTErrorCode.NotFound)).toBe(true);
+        continue;
+      }
+      expect(result).not.toBeInstanceOf(Error);
+      expect(new TextDecoder().decode(result.value)).toBe(versions[o.version]);
       commit(store, o.label, result.state);
     } else if (store.contacts.has(o.label)) {
       commit(store, o.label, (await client.monitor(o.label, stateFor(store, o.label))).state);
@@ -169,6 +181,63 @@ describe.each(SUITE_NAMES)("protocol guarantees with %s", (_, cipherSuite) => {
         }
         commit(store, "alice", (await clients[0]!.monitor("alice", stateFor(store, "alice"))).state);
       }
+    },
+  );
+
+  test.prop([fc.integer({ min: 1, max: RMW - 1 }), fc.integer({ min: 0, max: 5 }), fc.boolean()], opts)(
+    "monitoring when due finishes within a few rounds and never hits an expired entry",
+    async (gap, extra, research) => {
+      const w = await world({ cipherSuite, maximumLifetime: 3 * RMW, maxAhead: 100 });
+      const client = await w.client("user-0");
+      const tick = async () => {
+        w.clock.now += gap;
+        await w.log.tick();
+      };
+      await w.log.append({ label: "alice", value: bytes("v0"), expectedVersion: null });
+      for (let i = 0; i < extra; i++) await tick();
+      w.clock.now += gap;
+      await w.log.append({ label: "alice", value: bytes("v1"), expectedVersion: 0 });
+      let state: State = (await client.search("alice", client.initialState())).state;
+      for (let round = 0; state.contact!.monitoring.length; round++) {
+        expect(round).toBeLessThan(4);
+        const due = client.schedule(state)!;
+        expect(due.before! - due.after).toBeGreaterThan(0);
+        while (w.clock.now + gap < due.after) await tick();
+        await tick();
+        expect(w.clock.now).toBeLessThan(due.before!);
+        // A search in between must not push the schedule past its deadline
+        if (research) state = (await client.search("alice", state)).state;
+        const again = client.schedule(state);
+        if (again?.before !== undefined) expect(again.after).toBeLessThanOrEqual(again.before);
+        state = (await client.monitor("alice", state)).state;
+      }
+      expect(client.schedule(state)).toBeUndefined();
+    },
+  );
+
+  test.prop([fc.array(fc.integer({ min: 0, max: 3 * RMW }), { minLength: 1, maxLength: 12 }), fc.nat()], opts)(
+    "fixed-version search with a maximum lifetime returns the right value or reports expiry",
+    async (gaps, pick) => {
+      const w = await world({ cipherSuite, maximumLifetime: 2 * RMW });
+      const client = await w.client("user-0");
+      const values: string[] = [];
+      for (const [i, gap] of gaps.entries()) {
+        w.clock.now += gap;
+        if (i % 2) await w.log.tick();
+        else {
+          values.push(`v${values.length}`);
+          await w.log.append({
+            label: "alice",
+            value: bytes(values.at(-1)!),
+            expectedVersion: values.length - 2 < 0 ? null : values.length - 2,
+          });
+        }
+      }
+      const version = pick % values.length;
+      const result = await client.search("alice", client.initialState(), { version }).catch((e) => e);
+      if (isKTError(result, KTErrorCode.Expired)) return;
+      expect(result).not.toBeInstanceOf(Error);
+      expect(new TextDecoder().decode(result.value)).toBe(values[version]);
     },
   );
 

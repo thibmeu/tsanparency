@@ -6,7 +6,7 @@
 import { equalBytes } from "@noble/curves/utils.js";
 import { logLeaf } from "./crypto.ts";
 import { KTError, KTErrorCode } from "./errors.ts";
-import { ancestors, frontier, hasRight, left, right, root } from "./ibst.ts";
+import { ancestors, frontier, hasLeft, hasRight, left, right, root } from "./ibst.ts";
 import { monitoringLadder, searchLadder } from "./ladder.ts";
 import { type Range, computeRoot, fullSubtrees } from "./logtree.ts";
 import type { CombinedTreeProof, MonitorMapEntry } from "./messages.ts";
@@ -71,26 +71,138 @@ export interface SearchOutcome {
   readonly distinguished: number | undefined;
 }
 
-/** Greatest-version search for claimed version t (Sections 6.3, 12.3.2). */
+/**
+ * Lookups already answered in one response. A ladder may omit an inclusion proof
+ * already given for an entry to its left, and a non-inclusion proof already given
+ * for an entry to its right (Section 6.2).
+ */
+export class Omissions {
+  readonly #included = new Map<number, number>();
+  readonly #excluded = new Map<number, number>();
+
+  known(x: number, v: number): boolean | undefined {
+    const l = this.#included.get(v);
+    if (l !== undefined && l < x) return true;
+    const r = this.#excluded.get(v);
+    if (r !== undefined && r > x) return false;
+    return undefined;
+  }
+
+  record(x: number, v: number, included: boolean): void {
+    const map = included ? this.#included : this.#excluded;
+    const seen = map.get(v);
+    if (seen === undefined || (included ? x < seen : x > seen)) map.set(v, x);
+  }
+
+  /** Records what a search ladder for t would show at x, where `greatest` is the greatest version there */
+  assume(x: number, t: number, greatest: number | undefined): void {
+    searchLadder(t, (v) => {
+      const inc = greatest !== undefined && v <= greatest;
+      this.record(x, v, inc);
+      return inc;
+    });
+  }
+}
+
+/** Runs a search ladder for t at x, recording outcomes and omitting known ones, and returns its probe results */
+function searchAt(c: Context, x: number, t: number, omit: Omissions | undefined): Map<number, boolean> {
+  const seen = new Map<number, boolean>();
+  c.ladder(x, (probe) =>
+    searchLadder(t, (v) => {
+      const inc = omit?.known(x, v) ?? probe(v);
+      omit?.record(x, v, inc);
+      seen.set(v, inc);
+      return inc;
+    }),
+  );
+  return seen;
+}
+
+/**
+ * Search ladder at x proving that t is the greatest version there, or that no
+ * version exists when t is undefined (Sections 8.3, 9.1)
+ */
+function exactLadder(c: Context, x: number, t: number | undefined, omit?: Omissions): void {
+  for (const [v, inc] of searchAt(c, x, t ?? 0, omit))
+    if (t === undefined ? inc : inc ? v > t : v <= t) throw new Error("binary ladder contradicts the greatest version");
+}
+
+/** Greatest-version search for claimed version t (Sections 6.3, 12.3.2) */
 export function greatestVersionSearch(c: Context, p: Params, t: number): SearchOutcome {
   const distinguished = rightmostDistinguished(c, p.reasonableMonitoringWindow);
-  const included = new Set<number>();
+  const omit = new Omissions();
   let terminal: number | undefined;
   for (let x = distinguished ?? root(c.n); ; x = right(x, c.n)) {
     const rightmost = x === c.n - 1;
-    c.ladder(x, (probe) =>
-      searchLadder(t, (v) => {
-        if (included.has(v)) return true;
-        const inc = probe(v);
-        if (inc ? v > t : rightmost && v <= t) throw new Error("binary ladder contradicts the greatest version");
-        if (inc) included.add(v);
-        return inc;
-      }),
-    );
-    if (terminal === undefined && included.has(t)) terminal = x;
+    // Every lookup above t must be a non-inclusion, and at the rightmost entry
+    // every lookup at or below t an inclusion
+    for (const [v, inc] of searchAt(c, x, t, omit)) {
+      if (inc ? v > t : rightmost && v <= t) throw new Error("binary ladder contradicts the greatest version");
+      if (v === t && inc && terminal === undefined) terminal = x;
+    }
     if (rightmost) break;
   }
   return { terminal: terminal!, distinguished };
+}
+
+/**
+ * Fixed-version search for version t (Sections 7.2, 12.3.3). Descends the implicit
+ * binary search tree from the root: expired entries recurse right without a
+ * ladder, and each ladder says whether the greatest version is below, equal to or
+ * above t. Throws KTError(Expired) when t can only be found in expired entries.
+ */
+export function fixedVersionSearch(c: Context, p: Params, t: number): SearchOutcome {
+  const rmw = p.reasonableMonitoringWindow;
+  const expired = expiry(c, p);
+  const omit = new Omissions();
+  const inspected: { x: number; greatest: -1 | 0 | 1 }[] = [];
+  let sawExpired = false;
+  let x: number | undefined = root(c.n);
+  while (x !== undefined) {
+    if (expired(x)) {
+      sawExpired = true;
+      x = hasRight(x, c.n) ? right(x, c.n) : undefined;
+      continue;
+    }
+    let greatest: -1 | 0 | 1 = 0;
+    for (const [v, inc] of searchAt(c, x, t, omit)) {
+      if (inc && v > t) greatest = 1;
+      if (!inc && v <= t) greatest = -1;
+    }
+    inspected.push({ x, greatest });
+    if (greatest === 0) {
+      // Step 5: accept unless expired entries lie on the path, in which case the
+      // entry itself or an unexpired distinguished ancestor to its left must vouch for it
+      const at = x;
+      const path = ancestors(at, c.n);
+      if (path.some(expired)) {
+        const vouched = [at, ...path.filter((a) => a < at)].some((a) => !expired(a) && isDistinguished(c, rmw, a));
+        if (!vouched) throw new KTError(KTErrorCode.Expired);
+      }
+      return { terminal: at, distinguished: rightmostDistinguished(c, rmw) };
+    }
+    if (greatest < 0) x = hasRight(x, c.n) ? right(x, c.n) : undefined;
+    else x = hasLeft(x) ? left(x) : undefined;
+  }
+  // Step 6: the leftmost inspected entry whose greatest version exceeds t
+  const above = inspected.filter((e) => e.greatest > 0).sort((a, b) => a.x - b.x)[0];
+  if (!above) throw new Error("target version does not exist");
+  if (sawExpired) {
+    const vouched = inspected.some((e) => e.x < above.x && !expired(e.x) && isDistinguished(c, rmw, e.x));
+    if (!vouched) throw new KTError(KTErrorCode.Expired);
+  }
+  c.ladder(above.x, (probe) => {
+    if (!probe(t)) throw new Error("target version does not exist");
+  });
+  return { terminal: above.x, distinguished: rightmostDistinguished(c, rmw) };
+}
+
+/** An entry is expired once the rightmost timestamp is a maximum lifetime past it (Section 7.1) */
+function expiry(c: Context, p: Params): (x: number) => boolean {
+  const ml = p.maximumLifetime;
+  if (ml === undefined) return () => false;
+  const rightmost = c.timestamp(c.n - 1);
+  return (x) => rightmost - c.timestamp(x) >= ml;
 }
 
 /** Contact monitoring (Sections 8.2, 12.3.4). Returns the updated monitoring map. */
