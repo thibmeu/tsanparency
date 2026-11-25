@@ -24,7 +24,7 @@ import {
   vrfInput,
 } from "./crypto.ts";
 import { KTError, KTErrorCode } from "./errors.ts";
-import { ancestors } from "./ibst.ts";
+import { ancestors, root } from "./ibst.ts";
 import { baseLadder } from "./ladder.ts";
 import { type Range, fullSubtrees, rootFromFullSubtrees } from "./logtree.ts";
 import {
@@ -79,6 +79,11 @@ export interface LogOptions {
   readonly limits?: Partial<Limits>;
   /** Where log entries are persisted. Defaults to memory. */
   readonly store?: Store;
+  /**
+   * Smallest tree size the caller knows the store reached, such as the last
+   * published head. Opening fails if the store returns fewer entries.
+   */
+  readonly minimumSize?: number;
   /** Milliseconds since the Unix epoch. */
   readonly now?: () => number;
 }
@@ -160,7 +165,10 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
   };
 
   const store = options.store ?? memoryStore();
-  let lastRoot: Uint8Array | undefined;
+  const verifyHead = await treeHeadVerifier(config);
+  let broken: Error | undefined;
+  /** Tree sizes that in-flight requests read, which pruning must keep provable */
+  const readers = new Map<number, number>();
   const entries: Entry[] = [];
   /** heads[k][i] is the head of the balanced subtree of size 2^k starting at i * 2^k. */
   const heads: Uint8Array[][] = [];
@@ -218,7 +226,9 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
   function prune(): void {
     const ml = config.maximumLifetime;
     if (ml === undefined) return;
-    const rightmost = entries.at(-1)!.timestamp;
+    // Expiry as seen by the oldest snapshot still being read
+    const oldest = Math.min(entries.length, ...readers.keys());
+    const rightmost = entries[oldest - 1]!.timestamp;
     for (; pruned < entries.length - 1 && rightmost - entries[pruned]!.timestamp >= ml; pruned++)
       entries[pruned]!.tree = null;
   }
@@ -237,45 +247,80 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
     const n = entries.length;
     const timestamp = Math.max(now(), entries.at(-1)?.timestamp ?? 0);
     const root = grow(timestamp, tree);
+    let signature: Uint8Array;
     try {
       const tbs = treeHeadTBS(encodedConfig, n + 1, root);
-      const signature = new Uint8Array(
-        await crypto.subtle.sign(suite.signature.sign, options.signingKey.privateKey, tbs),
-      );
-      await store.append(n, { timestamp, versions, signature });
-      head = { treeSize: n + 1, signature };
-      prune();
-      return n;
+      signature = new Uint8Array(await crypto.subtle.sign(suite.signature.sign, options.signingKey.privateKey, tbs));
     } catch (e) {
       shrinkTo(n);
       rollback();
-      await replay(n).catch(() => {});
       throw e;
     }
+    try {
+      await store.append(n, { timestamp, versions, signature });
+    } catch (e) {
+      // The outcome is ambiguous: catch up with the store, and succeed if it holds this entry
+      shrinkTo(n);
+      rollback();
+      const stored = await replay(n);
+      if (stored[0] && equalBytes(stored[0], signature)) return n;
+      throw new KTError(KTErrorCode.Conflict, { cause: e });
+    }
+    head = { treeSize: n + 1, signature };
+    prune();
+    return n;
   }
 
-  /** Rebuilds memory from stored entries at and after position `from` */
-  async function replay(from: number): Promise<void> {
-    for await (const e of store.read(from)) {
-      const position = entries.length;
-      let tree = entries.at(-1)?.tree ?? null;
-      for (const v of e.versions) {
-        const state = labelState(v.label);
-        if (v.version !== state.versions.length) throw new Error("stored versions are not consecutive");
-        const c = commitment(v.opening, v.label, v.version, v.value);
-        tree = insert(tree, v.vrfOutput, c);
-        state.versions.push({ position, opening: v.opening, value: v.value, commitment: c });
-        state.vrf.set(v.version, { output: v.vrfOutput });
+  /**
+   * Applies stored entries at and after `from`, checking that the last one's tree
+   * head verifies before serving it. A store that fails these checks breaks the
+   * log, which must then be reopened. Returns the signatures applied.
+   */
+  async function replay(from: number): Promise<Uint8Array[]> {
+    const applied: Uint8Array[] = [];
+    let root: Uint8Array | undefined;
+    try {
+      for await (const e of store.read(from)) {
+        const position = entries.length;
+        let tree = entries.at(-1)?.tree ?? null;
+        // Check the whole entry before changing any label state
+        const next = new Map<string, number>();
+        const added: [LabelState, Version, Uint8Array][] = [];
+        for (const v of e.versions) {
+          const state = labelState(v.label);
+          const key = bytesToHex(v.label);
+          const expected = next.get(key) ?? state.versions.length;
+          if (v.version !== expected) throw new Error("stored versions are not consecutive");
+          next.set(key, expected + 1);
+          const c = commitment(v.opening, v.label, v.version, v.value);
+          tree = insert(tree, v.vrfOutput, c);
+          added.push([state, { position, opening: v.opening, value: v.value, commitment: c }, v.vrfOutput]);
+        }
+        if (!(e.timestamp >= (entries.at(-1)?.timestamp ?? 0))) throw new Error("stored timestamps decrease");
+        for (const [state, version, output] of added) {
+          if (!state.vrf.has(state.versions.length)) state.vrf.set(state.versions.length, { output });
+          state.versions.push(version);
+        }
+        root = grow(e.timestamp, tree);
+        applied.push(e.signature);
       }
-      const root = grow(e.timestamp, tree);
-      head = { treeSize: position + 1, signature: e.signature };
-      lastRoot = root;
+      if (root) {
+        const size = entries.length;
+        const signature = applied.at(-1)!;
+        if (!(await verifyHead(size, root, signature))) throw new Error("stored tree head does not verify");
+        head = { treeSize: size, signature };
+        prune();
+      }
+      return applied;
+    } catch (e) {
+      broken = new Error("the store does not hold a valid log", { cause: e });
+      throw broken;
     }
-    if (entries.length) prune();
   }
 
   function enqueue<T>(signal: AbortSignal | undefined, work: () => Promise<T>): Promise<T> {
     signal?.throwIfAborted();
+    if (broken) throw broken;
     if (pendingWrites >= limits.maxPendingWrites) throw new KTError(KTErrorCode.Overloaded);
     pendingWrites++;
     const run = writes.then(() => {
@@ -428,6 +473,10 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
       checkLast(req.last, n);
       await authorize(Operation.OwnerInit, req.label, principal);
       if (req.start !== undefined && req.start >= n) throw new KTError(KTErrorCode.InvalidRequest);
+      // Owning from the start of the log needs its pruned entries, once the root expired
+      const ml = config.maximumLifetime;
+      if (req.start === undefined && ml !== undefined && entries[n - 1]!.timestamp - entries[root(n)]!.timestamp >= ml)
+        throw new KTError(KTErrorCode.InvalidRequest);
       const state = labelState(req.label);
       const p = prover(state, req.label, n, req.last);
       const { versions } = ownerInit(p, params, req.start, (_, x) => greatestAt(state, x));
@@ -537,18 +586,14 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
   }
 
   await replay(0);
-  if (head && lastRoot) {
-    const verify = await treeHeadVerifier(config);
-    if (!(await verify(head.treeSize, lastRoot, head.signature)))
-      throw new Error("stored log does not match the configuration");
-  }
+  if (entries.length < (options.minimumSize ?? 0)) throw new Error("the store lost entries");
 
   return {
     get size() {
       return head?.treeSize ?? 0;
     },
 
-    append(update, { signal } = {}) {
+    async append(update, { signal } = {}) {
       const label = typeof update.label === "string" ? new TextEncoder().encode(update.label) : update.label.slice();
       const values = ("values" in update ? update.values : [update.value]).map((v) => v.slice());
       const expected = update.expectedVersion;
@@ -563,7 +608,7 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
       return enqueue(signal, () => insertVersions(label, values, expected));
     },
 
-    tick({ signal } = {}) {
+    async tick({ signal } = {}) {
       return enqueue(signal, async () => {
         await publish(entries.at(-1)?.tree ?? null, [], () => {});
       });
@@ -577,9 +622,17 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
       activeReads++;
       try {
         signal?.throwIfAborted();
+        if (broken) throw broken;
         const current = head;
         if (!current) throw new KTError(KTErrorCode.NotFound);
-        return await decode(request, (r) => handler(r, principal, current));
+        readers.set(current.treeSize, (readers.get(current.treeSize) ?? 0) + 1);
+        try {
+          return await decode(request, (r) => handler(r, principal, current));
+        } finally {
+          const left = readers.get(current.treeSize)! - 1;
+          if (left) readers.set(current.treeSize, left);
+          else readers.delete(current.treeSize);
+        }
       } catch (e) {
         if (e instanceof KTError || (e instanceof DOMException && e.name === "AbortError")) throw e;
         throw new KTError(KTErrorCode.InvalidRequest, { cause: e });

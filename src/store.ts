@@ -26,8 +26,10 @@ export interface Store {
   /** Committed entries from position `from` onward, in order */
   read(from: number): AsyncIterable<StoredEntry>;
   /**
-   * Stores `entry` at `position` atomically. Throws if an entry already exists
-   * there, which is how concurrent writers on one store detect each other.
+   * Stores `entry` at `position` atomically, as a linearizable put-if-absent
+   * that an eventually consistent store cannot provide. Throws if an entry
+   * already exists there, which is how concurrent writers on one store detect
+   * each other. When it throws after storing, the log notices on catch-up.
    */
   append(position: number, entry: StoredEntry): Promise<void>;
 }

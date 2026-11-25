@@ -69,4 +69,82 @@ describe.each(SUITE_NAMES)("durable store with %s", (_, cipherSuite) => {
     // The same entries under another configuration fail the tree head signature
     await expect(world({ cipherSuite, maxAhead: w.config.maxAhead + 1 }, { store })).rejects.toThrow();
   });
+
+  test("catching up from a store with a forged entry breaks the log instead of serving it", async () => {
+    const store = memoryStore();
+    const a = await world({ cipherSuite }, { store });
+    await a.log.append({ label: "alice", value: bytes("a0"), expectedVersion: null });
+    const forger: Store = {
+      read: (from) => store.read(from),
+      async append(p, e) {
+        await store.append(p, { ...e, signature: new Uint8Array(e.signature.length) });
+        throw new Error("lost connection");
+      },
+    };
+    const b = await world({ cipherSuite }, { store: forger });
+    await expect(b.log.append({ label: "alice", value: bytes("b1"), expectedVersion: 0 })).rejects.toThrow();
+    await expect(b.log.tick()).rejects.toThrow("valid log");
+    const client = await b.client("bob");
+    await expect(client.search("alice", client.initialState())).rejects.toThrow();
+  });
+
+  test("an append that stored before failing still succeeds", async () => {
+    const store = memoryStore();
+    const flaky: Store = {
+      read: (from) => store.read(from),
+      async append(p, e) {
+        await store.append(p, e);
+        throw new Error("timeout after commit");
+      },
+    };
+    const w = await world({ cipherSuite }, { store: flaky });
+    const { version, position } = await w.log.append({ label: "alice", value: bytes("a0"), expectedVersion: null });
+    expect([version, position, w.log.size]).toEqual([0, 0, 1]);
+    const client = await w.client("bob");
+    expect((await client.search("alice", client.initialState())).version).toBe(0);
+  });
+
+  test("a truncated store is detected with the last known size", async () => {
+    const store = memoryStore();
+    const w = await world({ cipherSuite }, { store });
+    await w.log.tick();
+    await w.log.tick();
+    const truncated: Store = {
+      async *read(from) {
+        let i = from;
+        for await (const e of store.read(from)) if (i++ < 1) yield e;
+      },
+      append: (p, e) => store.append(p, e),
+    };
+    await expect(world({ cipherSuite }, { store: truncated, minimumSize: 2 })).rejects.toThrow("lost entries");
+  });
+
+  test("an in-flight read keeps its snapshot provable while newer entries prune", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let held = false;
+    const w = await world(
+      { cipherSuite, maximumLifetime: 3000, maxAhead: 100 },
+      {
+        authorize: async () => {
+          if (!held) {
+            held = true;
+            await gate;
+          }
+          return true;
+        },
+      },
+    );
+    await w.log.append({ label: "alice", value: bytes("a0"), expectedVersion: null });
+    w.clock.now += 1000;
+    await w.log.append({ label: "alice", value: bytes("a1"), expectedVersion: 0 });
+    const client = await w.client("bob");
+    const pending = client.search("alice", client.initialState(), { version: 0 });
+    for (let i = 0; i < 6; i++) {
+      w.clock.now += 1000;
+      await w.log.tick();
+    }
+    release();
+    expect(new TextDecoder().decode((await pending).value)).toBe("a0");
+  });
 });
