@@ -1,11 +1,9 @@
 /** A log with `entries` appends over `labels` labels, and a client wired to it in-process. */
-import { type Exchange, createClient, openLog } from "../src/index.ts";
-import { CipherSuite, SUITES } from "../src/crypto.ts";
+import { type Exchange, createClient, openLog, KT_128_SHA256_Ed25519, KT_128_SHA256_P256 } from "../src/index.ts";
 
 export async function fixture(entries = Number(process.env.ENTRIES ?? 2000), labels = 500) {
-  const cipherSuite =
-    process.env.SUITE === "ed25519" ? CipherSuite.KT_128_SHA256_Ed25519 : CipherSuite.KT_128_SHA256_P256;
-  const suite = SUITES[cipherSuite];
+  const cipherSuite = process.env.SUITE === "ed25519" ? KT_128_SHA256_Ed25519 : KT_128_SHA256_P256;
+  const suite = cipherSuite;
   const vrfSecretKey = new Uint8Array(32).fill(7);
   const signingKey = (await crypto.subtle.generateKey(suite.signature.import, false, [
     "sign",

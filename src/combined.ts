@@ -37,7 +37,7 @@ export function updateView(c: Context, m: number): void {
 }
 
 /** Whether x is distinguished (Section 6.1), reading only the timestamps that decides it. */
-export function isDistinguished(c: Context, rmw: number, x: number): boolean {
+export function isDistinguished(c: Pick<Context, "n" | "timestamp">, rmw: number, x: number): boolean {
   let lo = 0;
   let hi = c.timestamp(c.n - 1);
   for (let node = root(c.n); ;) {
@@ -450,18 +450,25 @@ export class Prover implements Context {
     }
   }
 
-  finish(): CombinedTreeProof {
+  /** The proof, whose inclusion field also covers the root at `auditorSize` when given */
+  finish(auditorSize?: number): CombinedTreeProof {
     const log = this.#log;
     const provided = [...this.#ts.keys()].filter((x) => !this.#retained.has(x)).sort((a, b) => a - b);
     const leaves = new Map(provided.map((x) => [x, logLeaf(this.#ts.get(x)!, log.prefixRoot(x))]));
     const m = this.#m;
     const retained = m > 0 ? { size: m, heads: fullSubtrees(m).map((r) => log.head(r)) } : undefined;
     const inclusion: Uint8Array[] = [];
-    computeRoot(this.n, leaves, retained, (r) => {
-      const h = log.head(r);
-      inclusion.push(h);
-      return h;
-    });
+    computeRoot(
+      this.n,
+      leaves,
+      retained,
+      (r) => {
+        const h = log.head(r);
+        inclusion.push(h);
+        return h;
+      },
+      auditorSize,
+    );
     return {
       timestamps: this.#timestamps,
       prefixProofs: this.#proofs,
@@ -535,8 +542,11 @@ export class Verifier implements Context {
     return this.#nextProof >= this.#proof.prefixProofs.length;
   }
 
-  /** Checks every field was fully consumed and returns the new view and log root. */
-  finish(): { view: View; root: Uint8Array } {
+  /**
+   * Checks every field was fully consumed and returns the new view and log root,
+   * along with the root at `auditorSize` when given.
+   */
+  finish(auditorSize?: number): { view: View; root: Uint8Array; auditorRoot?: Uint8Array | undefined } {
     const p = this.#proof;
     if (this.#nextTimestamp !== p.timestamps.length || this.#nextProof !== p.prefixProofs.length)
       throw new Error("unused proof elements");
@@ -558,15 +568,22 @@ export class Verifier implements Context {
     const view = this.#view;
     const retained = view ? { size: view.treeSize, heads: view.fullSubtrees } : undefined;
     let next = 0;
-    const { root, full } = computeRoot(this.n, leaves, retained, () => {
-      const e = p.inclusion[next++];
-      if (!e) throw new Error("inclusion proof too short");
-      return e;
-    });
+    const { root, full, alsoRoot } = computeRoot(
+      this.n,
+      leaves,
+      retained,
+      () => {
+        const e = p.inclusion[next++];
+        if (!e) throw new Error("inclusion proof too short");
+        return e;
+      },
+      auditorSize,
+    );
     if (next !== p.inclusion.length) throw new Error("inclusion proof too long");
 
     return {
       root,
+      auditorRoot: alsoRoot,
       view: {
         treeSize: this.n,
         fullSubtrees: full,

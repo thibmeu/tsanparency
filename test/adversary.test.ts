@@ -2,7 +2,7 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import { describe, expect, test } from "vitest";
 import { Prover, type Snapshot, greatestVersionSearch, updateView } from "../src/combined.ts";
-import { SUITES, commitment, encodeConfiguration, logLeaf, logParent, treeHeadTBS, vrfInput } from "../src/crypto.ts";
+import { commitment, encodeConfiguration, logLeaf, logParent, treeHeadTBS, vrfInput } from "../src/crypto.ts";
 import { type Exchange, KTErrorCode, createClient } from "../src/index.ts";
 import { type Range, fullSubtrees, rootFromFullSubtrees } from "../src/logtree.ts";
 import { decodeSearchRequest, encodeSearchResponse } from "../src/messages.ts";
@@ -18,7 +18,7 @@ const label = enc.encode("alice");
  * answers greatest-version searches for version 0 of "alice".
  */
 async function rogueLog(cipherSuite: (typeof SUITE_NAMES)[number][1]) {
-  const suite = SUITES[cipherSuite];
+  const suite = cipherSuite;
   const pair = (await crypto.subtle.generateKey(suite.signature.import, false, ["sign", "verify"])) as CryptoKeyPair;
   const vrf = suite.vrf.key(new Uint8Array(32).fill(7));
   const config = await configuration({

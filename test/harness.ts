@@ -1,6 +1,6 @@
 import { hexToBytes } from "@noble/curves/utils.js";
 import { type Configuration, type Exchange, type Log, type LogOptions, createClient, openLog } from "../src/index.ts";
-import { CipherSuite, SUITES } from "../src/crypto.ts";
+import { type CipherSuite, KT_128_SHA256_Ed25519, KT_128_SHA256_P256 } from "../src/index.ts";
 
 const VRF_SECRET = hexToBytes("c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721");
 
@@ -9,7 +9,7 @@ function signingKey(suite: CipherSuite) {
   let k = keys.get(suite);
   if (!k) {
     k = (async () => {
-      const pair = (await crypto.subtle.generateKey(SUITES[suite].signature.import, false, [
+      const pair = (await crypto.subtle.generateKey(suite.signature.import, false, [
         "sign",
         "verify",
       ])) as CryptoKeyPair;
@@ -21,14 +21,14 @@ function signingKey(suite: CipherSuite) {
 }
 
 export const RMW = 1000;
-export const SUITE_NAMES = Object.entries(CipherSuite) as [string, CipherSuite][];
+export const SUITE_NAMES = Object.entries({ KT_128_SHA256_P256, KT_128_SHA256_Ed25519 }) as [string, CipherSuite][];
 
 export async function configuration(overrides: Partial<Configuration> = {}): Promise<Configuration> {
-  const cipherSuite = overrides.cipherSuite ?? CipherSuite.KT_128_SHA256_P256;
+  const cipherSuite = overrides.cipherSuite ?? KT_128_SHA256_P256;
   return {
     cipherSuite,
     signaturePublicKey: (await signingKey(cipherSuite)).raw,
-    vrfPublicKey: SUITES[cipherSuite].vrf.key(VRF_SECRET).publicKey,
+    vrfPublicKey: cipherSuite.vrf.key(VRF_SECRET).publicKey,
     maxAhead: 10_000,
     maxBehind: 60_000,
     reasonableMonitoringWindow: RMW,

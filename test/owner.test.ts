@@ -171,6 +171,25 @@ describe.each(SUITE_NAMES)("label owner with %s", (_, cipherSuite) => {
     }
   });
 
+  test("an owner can submit a full-sized value and catch up on a batch over 1 MiB", async () => {
+    const w = await world({ cipherSuite }, open);
+    await w.log.tick();
+    const client = await owners(w);
+    const state = await client.ownerInit("alice");
+    const value = new Uint8Array(1 << 16).fill(42);
+    const first = await client.update(state.owner, [value], state);
+    const size = w.log.size;
+    await expect(
+      w.log.append({ label: "alice", expectedVersion: 0, values: Array(255).fill(bytes("x")) }),
+    ).rejects.toMatchObject({ code: KTErrorCode.InvalidRequest });
+    expect(w.log.size).toBe(size);
+    await w.log.append({ label: "alice", expectedVersion: 0, values: Array(17).fill(value) });
+    const caught = await client.update(first.owner, [], first);
+    expect(caught.disregarded).toBe(true);
+    expect(caught.versions).toHaveLength(17);
+    expect(caught.versions.at(-1)?.value).toEqual(value);
+  });
+
   test("a first batch of 200 versions verifies", async () => {
     const w = await world({ cipherSuite }, open);
     await w.log.tick();

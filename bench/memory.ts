@@ -4,7 +4,7 @@
  *
  * Run: node --expose-gc bench/memory.ts
  */
-import { CipherSuite, openLog, vrfPublicKey } from "../src/index.ts";
+import { openLog, vrfPublicKey, KT_128_SHA256_Ed25519 } from "../src/index.ts";
 
 const gc = (globalThis as { gc?: () => void }).gc;
 if (!gc) throw new Error("run with --expose-gc");
@@ -16,9 +16,9 @@ for (const maximumLifetime of process.env.ML ? [Number(process.env.ML)] : [undef
   let now = 1_700_000_000_000;
   const log = await openLog(
     {
-      cipherSuite: CipherSuite.KT_128_SHA256_Ed25519,
+      cipherSuite: KT_128_SHA256_Ed25519,
       signaturePublicKey: new Uint8Array(await crypto.subtle.exportKey("raw", signingKey.publicKey)),
-      vrfPublicKey: vrfPublicKey(CipherSuite.KT_128_SHA256_Ed25519, vrfSecretKey),
+      vrfPublicKey: vrfPublicKey(KT_128_SHA256_Ed25519, vrfSecretKey),
       maxAhead: 1e12,
       maxBehind: 1e12,
       reasonableMonitoringWindow: 10_000,

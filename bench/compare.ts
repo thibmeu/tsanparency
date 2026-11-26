@@ -5,8 +5,14 @@
  *
  * Run: node bench/compare.ts, or under workerd with bench/workerd.sh
  */
-import { CipherSuite, type Exchange, createClient, openLog, vrfPublicKey } from "../src/index.ts";
-import { SUITES } from "../src/crypto.ts";
+import {
+  type Exchange,
+  createClient,
+  openLog,
+  vrfPublicKey,
+  KT_128_SHA256_Ed25519,
+  KT_128_SHA256_P256,
+} from "../src/index.ts";
 
 // Means rather than medians, since workerd only advances its clock by whole milliseconds
 const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
@@ -19,8 +25,8 @@ async function time(n: number, f: () => unknown): Promise<number> {
 
 const alpha = new TextEncoder().encode("alice@example.com");
 export async function compare(print: (line: string) => void): Promise<void> {
-  for (const [name, cipherSuite] of Object.entries(CipherSuite)) {
-    const { vrf, signature } = SUITES[cipherSuite];
+  for (const [name, cipherSuite] of Object.entries({ KT_128_SHA256_P256, KT_128_SHA256_Ed25519 })) {
+    const { vrf, signature } = cipherSuite;
     const key = vrf.key(new Uint8Array(32).fill(7));
     const { proof } = key.prove(alpha);
     const verify = vrf.verifier(key.publicKey);

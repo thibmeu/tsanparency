@@ -3,18 +3,10 @@ import { bytesToHex, concatBytes, hexToBytes } from "@noble/curves/utils.js";
 import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { expect, test } from "vitest";
-import {
-  CipherSuite,
-  commitment,
-  encodeConfiguration,
-  logLeaf,
-  logParent,
-  treeHeadVerifier,
-  vrfInput,
-} from "../src/crypto.ts";
-import { P256_VRF } from "../src/vrf.ts";
+import { commitment, encodeConfiguration, logLeaf, logParent, treeHeadVerifier, vrfInput } from "../src/crypto.ts";
+import { KT_128_SHA256_P256 } from "../src/index.ts";
 
-const vrf = P256_VRF.key(hexToBytes("c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721"));
+const vrf = KT_128_SHA256_P256.vrf.key(hexToBytes("c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721"));
 
 async function setup() {
   const keys = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, [
@@ -23,7 +15,7 @@ async function setup() {
   ])) as CryptoKeyPair;
   const signaturePublicKey = new Uint8Array(await crypto.subtle.exportKey("raw", keys.publicKey));
   const config = {
-    cipherSuite: CipherSuite.KT_128_SHA256_P256,
+    cipherSuite: KT_128_SHA256_P256,
     signaturePublicKey,
     vrfPublicKey: vrf.publicKey,
     maxAhead: 1,
@@ -63,16 +55,16 @@ test("Configuration and TreeHeadTBS encoding, signature verification", async () 
   expect(await (await treeHeadVerifier({ ...config, maxAhead: 9 }))(10, root, sig)).toBe(false);
 });
 
-test("rejects malformed configuration keys", () => {
+test("rejects malformed configuration keys and durations", async () => {
   const bad = {
-    cipherSuite: CipherSuite.KT_128_SHA256_P256,
+    cipherSuite: KT_128_SHA256_P256,
     signaturePublicKey: vrf.publicKey,
     vrfPublicKey: vrf.publicKey,
     maxAhead: 0,
     maxBehind: 0,
     reasonableMonitoringWindow: 0,
   };
-  expect(() => encodeConfiguration(bad)).toThrow();
+  await expect(treeHeadVerifier(bad)).rejects.toThrow();
   const uncompressed = p256.Point.fromBytes(vrf.publicKey).toBytes(false);
   expect(() => encodeConfiguration({ ...bad, signaturePublicKey: uncompressed, maxAhead: -1 })).toThrow(RangeError);
 });

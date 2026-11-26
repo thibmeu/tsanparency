@@ -1,11 +1,9 @@
 /** Cipher suites and the computations of protocol Section 11 */
-import { ed25519 } from "@noble/curves/ed25519.js";
-import { p256 } from "@noble/curves/nist.js";
-import { concatBytes } from "@noble/curves/utils.js";
+import { concatBytes, equalBytes } from "@noble/curves/utils.js";
 import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { Writer } from "./tls.ts";
-import { ED25519_VRF, P256_VRF, type Vrf } from "./vrf.ts";
+import type { Vrf } from "./vrf.ts";
 
 /** Hash.Nh and VRF.Nh, shared by both suites (Section 17.1) */
 export const NH = 32;
@@ -15,42 +13,16 @@ const KC = new Uint8Array([
   0xd8, 0x21, 0xf8, 0x79, 0x0d, 0x97, 0x70, 0x97, 0x96, 0xb4, 0xd7, 0x90, 0x33, 0x57, 0xc3, 0xf5,
 ]);
 
-export const CipherSuite = { KT_128_SHA256_P256: 0x0001, KT_128_SHA256_Ed25519: 0x0002 } as const;
-export type CipherSuite = (typeof CipherSuite)[keyof typeof CipherSuite];
-
-export interface Suite {
+/** A KT cipher suite (Section 17.1). Both suites hash with SHA-256. */
+export interface CipherSuite {
+  /** Value in the KT Cipher Suites registry */
+  readonly id: number;
   readonly vrf: Vrf;
   /** Web Crypto algorithm for tree head signatures */
   readonly signature: { readonly import: EcKeyImportParams | Algorithm; readonly sign: EcdsaParams | Algorithm };
-  /** Throws unless the bytes encode a signature public key */
-  readonly checkSignatureKey: (key: Uint8Array) => void;
 }
 
-/**
- * KT_128_SHA256_P256 signs with ECDSA over P-256 and SHA-256, with uncompressed
- * public keys and r || s signatures. KT_128_SHA256_Ed25519 signs with Ed25519.
- * Both hash with SHA-256 (Section 17.1).
- */
-export const SUITES: Record<CipherSuite, Suite> = {
-  [CipherSuite.KT_128_SHA256_P256]: {
-    vrf: P256_VRF,
-    signature: { import: { name: "ECDSA", namedCurve: "P-256" }, sign: { name: "ECDSA", hash: "SHA-256" } },
-    checkSignatureKey: (k) => {
-      if (k.length !== 65) throw new Error("signature key must be an uncompressed P-256 point");
-      p256.Point.fromBytes(k);
-    },
-  },
-  [CipherSuite.KT_128_SHA256_Ed25519]: {
-    vrf: ED25519_VRF,
-    signature: { import: { name: "Ed25519" }, sign: { name: "Ed25519" } },
-    checkSignatureKey: (k) => {
-      if (k.length !== 32) throw new Error("signature key must be an Ed25519 public key");
-      ed25519.Point.fromBytes(k);
-    },
-  },
-};
-
-/** Trusted log configuration for Contact Monitoring mode (Section 11.2) */
+/** Trusted log configuration, in Contact Monitoring or Third-Party Auditing mode (Section 11.2) */
 export interface Configuration {
   readonly cipherSuite: CipherSuite;
   readonly signaturePublicKey: Uint8Array;
@@ -63,29 +35,34 @@ export interface Configuration {
   readonly reasonableMonitoringWindow: number;
   /** Age at which log entries expire, in milliseconds (Section 7.1) */
   readonly maximumLifetime?: number;
+  /** Third-Party Auditor attesting to the log's construction (Section 15.2) */
+  readonly auditor?: {
+    /** Signature public key for AuditorTreeHead */
+    readonly publicKey: Uint8Array;
+    /** How far the auditor may lag behind the rightmost log entry, in milliseconds */
+    readonly maxLag: number;
+    /** Position of the first log entry the auditor processed */
+    readonly startPosition: number;
+  };
 }
 
 const CONTACT_MONITORING = 1;
+const THIRD_PARTY_AUDITING = 3;
 
-export function suiteOf(c: Configuration): Suite {
-  const suite = SUITES[c.cipherSuite];
-  if (!suite) throw new Error("unsupported cipher suite");
-  return suite;
-}
-
-/** TLS encoding of Configuration (Section 11.2). Throws on malformed keys or durations. */
+/**
+ * TLS encoding of Configuration (Section 11.2). Throws on invalid durations. Keys
+ * are checked where they are used.
+ */
 export function encodeConfiguration(c: Configuration): Uint8Array {
-  const suite = suiteOf(c);
-  suite.checkSignatureKey(c.signaturePublicKey);
-  suite.vrf.verifier(c.vrfPublicKey);
   const w = new Writer()
-    .u16(c.cipherSuite)
-    .u8(CONTACT_MONITORING)
+    .u16(c.cipherSuite.id)
+    .u8(c.auditor ? THIRD_PARTY_AUDITING : CONTACT_MONITORING)
     .opaque(2, c.signaturePublicKey)
-    .opaque(2, c.vrfPublicKey)
-    .u64(c.maxAhead)
-    .u64(c.maxBehind)
-    .u64(c.reasonableMonitoringWindow);
+    .opaque(2, c.vrfPublicKey);
+  if (c.auditor) {
+    w.u64(c.auditor.maxLag).u64(c.auditor.startPosition).opaque(2, c.auditor.publicKey);
+  }
+  w.u64(c.maxAhead).u64(c.maxBehind).u64(c.reasonableMonitoringWindow);
   // The maximum lifetime MUST be greater than zero and than the RMW (Section 7.1)
   if (c.maximumLifetime !== undefined && !(c.maximumLifetime > 0 && c.maximumLifetime > c.reasonableMonitoringWindow))
     throw new RangeError("maximum lifetime must exceed the reasonable monitoring window");
@@ -100,28 +77,47 @@ export const hash = (b: Uint8Array): Uint8Array => sha256(b);
 export const treeHeadTBS = (config: Uint8Array, treeSize: number, root: Uint8Array): Uint8Array<ArrayBuffer> =>
   new Writer().bytes(config).u64(treeSize).bytes(root).finish();
 
+/** AuditorTreeHeadTBS: what AuditorTreeHead.signature covers (Section 11.3) */
+export const auditorTreeHeadTBS = (
+  config: Uint8Array,
+  timestamp: number,
+  treeSize: number,
+  root: Uint8Array,
+): Uint8Array<ArrayBuffer> => new Writer().bytes(config).u64(timestamp).u64(treeSize).bytes(root).finish();
+
+async function verifier(config: Configuration, publicKey: Uint8Array) {
+  const { signature } = config.cipherSuite;
+  const key = await crypto.subtle.importKey("raw", publicKey as Uint8Array<ArrayBuffer>, signature.import, true, [
+    "verify",
+  ]);
+  // Web Crypto accepts encodings the suite does not, such as compressed points
+  if (!equalBytes(new Uint8Array(await crypto.subtle.exportKey("raw", key)), publicKey))
+    throw new Error("public key is not in the suite's encoding");
+  return (tbs: Uint8Array<ArrayBuffer>, sig: Uint8Array): Promise<boolean> =>
+    sig.length === 64
+      ? crypto.subtle.verify(signature.sign, key, sig as Uint8Array<ArrayBuffer>, tbs)
+      : Promise.resolve(false);
+}
+
 /** Verifier for TreeHead.signature, bound to one configuration */
 export async function treeHeadVerifier(
   config: Configuration,
 ): Promise<(treeSize: number, root: Uint8Array, signature: Uint8Array) => Promise<boolean>> {
   const encoded = encodeConfiguration(config);
-  const { signature } = suiteOf(config);
-  const key = await crypto.subtle.importKey(
-    "raw",
-    config.signaturePublicKey as Uint8Array<ArrayBuffer>,
-    signature.import,
-    false,
-    ["verify"],
-  );
-  return (treeSize, root, sig) => {
-    if (sig.length !== 64 || root.length !== NH) return Promise.resolve(false);
-    return crypto.subtle.verify(
-      signature.sign,
-      key,
-      sig as Uint8Array<ArrayBuffer>,
-      treeHeadTBS(encoded, treeSize, root),
-    );
-  };
+  const verify = await verifier(config, config.signaturePublicKey);
+  return (treeSize, root, sig) =>
+    root.length === NH ? verify(treeHeadTBS(encoded, treeSize, root), sig) : Promise.resolve(false);
+}
+
+/** Verifier for AuditorTreeHead.signature, bound to a configuration with an auditor */
+export async function auditorTreeHeadVerifier(
+  config: Configuration,
+): Promise<(timestamp: number, treeSize: number, root: Uint8Array, signature: Uint8Array) => Promise<boolean>> {
+  if (!config.auditor) throw new Error("the configuration has no auditor");
+  const encoded = encodeConfiguration(config);
+  const verify = await verifier(config, config.auditor.publicKey);
+  return (timestamp, treeSize, root, sig) =>
+    root.length === NH ? verify(auditorTreeHeadTBS(encoded, timestamp, treeSize, root), sig) : Promise.resolve(false);
 }
 
 /** VrfInput (Section 11.7). */
@@ -152,4 +148,4 @@ export const prefixParent = (left: Uint8Array, right: Uint8Array): Uint8Array =>
 
 /** Encoded VRF public key for a 32-byte VRF secret key, for building a Configuration */
 export const vrfPublicKey = (cipherSuite: CipherSuite, secretKey: Uint8Array): Uint8Array =>
-  SUITES[cipherSuite].vrf.key(secretKey).publicKey;
+  cipherSuite.vrf.key(secretKey).publicKey;

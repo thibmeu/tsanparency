@@ -1,11 +1,12 @@
 import { bytesToHex, hexToBytes } from "@noble/curves/utils.js";
 import { describe, expect, test } from "vitest";
-import { ED25519_VRF, P256_VRF, type Vrf } from "../src/vrf.ts";
+import { KT_128_SHA256_Ed25519, KT_128_SHA256_P256 } from "../src/index.ts";
+import type { Vrf } from "../src/vrf.ts";
 
 const suites: [string, Vrf, { sk: string; pk: string; alpha: string; pi: string; beta: string }[]][] = [
   [
     "ECVRF-P256-SHA256-TAI (RFC 9381 Appendix B.1)",
-    P256_VRF,
+    KT_128_SHA256_P256.vrf,
     [
       {
         sk: "c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721",
@@ -33,7 +34,7 @@ const suites: [string, Vrf, { sk: string; pk: string; alpha: string; pi: string;
   ],
   [
     "ECVRF-EDWARDS25519-SHA512-TAI (RFC 9381 Appendix B.3), output truncated to 32 bytes",
-    ED25519_VRF,
+    KT_128_SHA256_Ed25519.vrf,
     [
       {
         sk: "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",

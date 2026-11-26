@@ -1,8 +1,8 @@
 import { fc, test } from "@fast-check/vitest";
 import { describe, expect } from "vitest";
 import { type Client, type Contact, type Checkpoint, type ContactState, KTErrorCode, isKTError } from "../src/index.ts";
-import { CipherSuite } from "../src/crypto.ts";
 import { RMW, SUITE_NAMES, type World, world } from "./harness.ts";
+import { type CipherSuite } from "../src/index.ts";
 
 const LABELS = ["alice", "bob", "carol"] as const;
 type Label = (typeof LABELS)[number];

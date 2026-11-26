@@ -18,31 +18,36 @@ import {
   encodeConfiguration,
   logLeaf,
   logParent,
-  suiteOf,
+  auditorTreeHeadVerifier,
   treeHeadTBS,
   treeHeadVerifier,
   vrfInput,
 } from "./crypto.ts";
 import { KTError, KTErrorCode } from "./errors.ts";
-import { ancestors, root } from "./ibst.ts";
-import { baseLadder } from "./ladder.ts";
+import { ancestors, frontier, root } from "./ibst.ts";
+import { MAX_VERSION, baseLadder, updateLadder } from "./ladder.ts";
 import { type Range, fullSubtrees, rootFromFullSubtrees } from "./logtree.ts";
 import {
+  DEFAULT_UPDATE_REQUEST_BYTES,
+  type AuditorTreeHead,
   type MonitorMapEntry,
+  decodeAuditorTreeHead,
   decodeContactMonitorRequest,
   decodeOwnerInitRequest,
   decodeOwnerMonitorRequest,
   decodeSearchRequest,
   decodeUpdateRequest,
+  encodeAuditorUpdate,
   encodeContactMonitorResponse,
   encodeOwnerInitResponse,
   encodeOwnerMonitorResponse,
   encodeSearchResponse,
   encodeUpdateResponse,
 } from "./messages.ts";
-import { type Node, insert, rootHash } from "./prefix.ts";
+import { type Node, addedLeaves, insert, prove, rootHash } from "./prefix.ts";
 import { type StoredVersion, type Store, memoryStore } from "./store.ts";
 import { type Reader, copy, decode } from "./tls.ts";
+import type { AuditorStart } from "./auditor.ts";
 import { Operation } from "./client.ts";
 
 export interface Authorization {
@@ -112,6 +117,19 @@ export interface Log {
   tick(options?: { readonly signal?: AbortSignal }): Promise<void>;
   /** Answers a TLS-encoded request for `operation`. */
   handle(operation: Operation, request: Uint8Array, options: HandleOptions): Promise<Uint8Array>;
+  /**
+   * TLS-encoded AuditorUpdate for the published log entry at `position` (Section 15.2),
+   * while the prefix tree before it has not expired.
+   */
+  auditorUpdate(position: number): Uint8Array;
+  /**
+   * Verifies a TLS-encoded AuditorTreeHead and serves it with every updated tree
+   * head, until a larger one arrives. Required in Third-Party Auditing mode, and kept
+   * in memory only, so supply the auditor's latest head again after reopening.
+   */
+  acceptAuditorHead(head: Uint8Array): Promise<void>;
+  /** What an auditor starting at log entry `position` trusts about the entries before it */
+  auditorStart(position: number): AuditorStart;
 }
 
 /** Distinguished entries proven per Owner Monitoring response (Section 8.3) */
@@ -148,11 +166,12 @@ interface Entry {
 interface Head {
   readonly treeSize: number;
   readonly signature: Uint8Array;
+  readonly auditor?: AuditorTreeHead | undefined;
 }
 
 export async function openLog(config: Configuration, options: LogOptions): Promise<Log> {
   const encodedConfig = encodeConfiguration(config);
-  const suite = suiteOf(config);
+  const suite = config.cipherSuite;
   const vrf = suite.vrf.key(options.vrfSecretKey);
   const signingPublic = new Uint8Array(await crypto.subtle.exportKey("raw", options.signingKey.publicKey));
   if (!equalBytes(vrf.publicKey, config.vrfPublicKey) || !equalBytes(signingPublic, config.signaturePublicKey))
@@ -166,6 +185,16 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
 
   const store = options.store ?? memoryStore();
   const verifyHead = await treeHeadVerifier(config);
+  const verifyAuditor = config.auditor && (await auditorTreeHeadVerifier(config));
+  let auditorHead: AuditorTreeHead | undefined;
+  /** The head to serve, with the auditor's in Third-Party Auditing mode */
+  const served = (h: Head): Head => {
+    if (!config.auditor) return h;
+    if (!auditorHead) throw new KTError(KTErrorCode.NotFound);
+    return { ...h, auditor: auditorHead };
+  };
+  const rootAt = (size: number) => rootFromFullSubtrees(size, fullSubtrees(size).map(snapshot(size).head));
+  const maxUpdateRequestBytes = options.limits?.maxRequestBytes ?? DEFAULT_UPDATE_REQUEST_BYTES;
   let broken: Error | undefined;
   /** Tree sizes that in-flight requests read, which pruning must keep provable */
   const readers = new Map<number, number>();
@@ -409,6 +438,9 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
     const state = labelState(label);
     const latest = state.versions.length - 1;
     if ((expected ?? -1) !== latest) throw new KTError(KTErrorCode.Conflict);
+    const after = latest + values.length;
+    if (after > MAX_VERSION || (values.length + 65 > 255 && updateLadder(latest, after).length > 255))
+      throw new KTError(KTErrorCode.InvalidRequest);
     let tree = entries.at(-1)?.tree ?? null;
     const position = entries.length;
     const stored: StoredVersion[] = [];
@@ -454,7 +486,7 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
           opening: target.opening,
           value: target.value,
           binaryLadder: steps(state, req.label, baseLadder(t), (v) => v !== t && v <= greatest),
-          search: p.finish(),
+          search: p.finish(req.last === n ? undefined : current.auditor?.treeSize),
         },
         req.version !== undefined,
       );
@@ -474,7 +506,10 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
       checkEntries(state, req.entries, n, greatest);
       const p = prover(state, req.label, n, req.last);
       contactMonitor(p, params, req.entries);
-      return encodeContactMonitorResponse({ treeHead: req.last === n ? undefined : current, monitor: p.finish() });
+      return encodeContactMonitorResponse({
+        treeHead: req.last === n ? undefined : current,
+        monitor: p.finish(req.last === n ? undefined : current.auditor?.treeSize),
+      });
     }),
 
     [Operation.OwnerInit]: decoded(decodeOwnerInitRequest, async (req, principal, current) => {
@@ -501,7 +536,7 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
           [...ladder].sort((a, b) => a - b),
           (v) => v <= atStart,
         ),
-        init: p.finish(),
+        init: p.finish(req.last === n ? undefined : current.auditor?.treeSize),
       });
     }),
 
@@ -528,7 +563,10 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
         history,
         (x) => (greatestAt(state, x) ?? -1) > advertised || ladders++ >= OWNER_LADDERS,
       );
-      return encodeOwnerMonitorResponse({ treeHead: req.last === n ? undefined : current, monitor: p.finish() });
+      return encodeOwnerMonitorResponse({
+        treeHead: req.last === n ? undefined : current,
+        monitor: p.finish(req.last === n ? undefined : current.auditor?.treeSize),
+      });
     }),
 
     [Operation.Update]: decoded(decodeUpdateRequest, async (req, principal, current) => {
@@ -547,7 +585,7 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
       else {
         await enqueue(undefined, () => insertVersions(req.label, req.values, req.greatestVersion ?? null));
         state = peekLabel(req.label);
-        at = head!;
+        at = served(head!);
       }
       const n = at.treeSize;
       const position = state.versions[advertised + 1]!.position;
@@ -561,25 +599,13 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
         greatestAt: (x: number) => greatestAt(state, x),
       };
       labelUpdate(p, params, history, position, created.length);
-      // VRF proofs the owner lacks: the search ladder for the new greatest version and
-      // each new version, less the search ladder it already knows (Section 9.1)
-      const wanted = new Set([
-        ...baseLadder(after),
-        ...(created.length > 1 ? created.map((_, i) => advertised + 1 + i) : []),
-      ]);
-      for (const v of before === undefined ? [0] : baseLadder(before)) wanted.delete(v);
       return encodeUpdateResponse({
         treeHead: req.last === n ? undefined : at,
         position,
         values: disregarded ? created.map((v) => v.value) : [],
         openings: created.map((v) => v.opening),
-        binaryLadder: steps(
-          state,
-          req.label,
-          [...wanted].sort((a, b) => a - b),
-          (v) => v < advertised,
-        ),
-        update: p.finish(),
+        binaryLadder: steps(state, req.label, updateLadder(advertised, after), (v) => v < advertised),
+        update: p.finish(req.last === n ? undefined : at.auditor?.treeSize),
       });
     }),
   };
@@ -623,7 +649,8 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
     },
 
     async handle(operation, request, { principal, signal }) {
-      if (request.length > limits.maxRequestBytes) throw new KTError(KTErrorCode.InvalidRequest);
+      const maxBytes = operation === Operation.Update ? maxUpdateRequestBytes : limits.maxRequestBytes;
+      if (request.length > maxBytes) throw new KTError(KTErrorCode.InvalidRequest);
       const handler = handlers[operation];
       if (!handler) throw new KTError(KTErrorCode.InvalidRequest);
       if (activeReads >= limits.maxActiveReads) throw new KTError(KTErrorCode.Overloaded);
@@ -631,8 +658,8 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
       try {
         signal?.throwIfAborted();
         if (broken) throw broken;
-        const current = head;
-        if (!current) throw new KTError(KTErrorCode.NotFound);
+        if (!head) throw new KTError(KTErrorCode.NotFound);
+        const current = served(head);
         readers.set(current.treeSize, (readers.get(current.treeSize) ?? 0) + 1);
         try {
           return await handler(request, principal, current);
@@ -647,6 +674,53 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
       } finally {
         activeReads--;
       }
+    },
+
+    async acceptAuditorHead(bytes) {
+      let h: AuditorTreeHead;
+      try {
+        h = decode(bytes, decodeAuditorTreeHead);
+      } catch (e) {
+        throw new KTError(KTErrorCode.InvalidRequest, { cause: e });
+      }
+      const n = h.treeSize;
+      if (
+        !verifyAuditor ||
+        n < 1 ||
+        n > (head?.treeSize ?? 0) ||
+        h.timestamp !== entries[n - 1]!.timestamp ||
+        !(await verifyAuditor(h.timestamp, n, rootAt(n), h.signature))
+      )
+        throw new KTError(KTErrorCode.InvalidRequest);
+      if (n >= (auditorHead?.treeSize ?? 0)) auditorHead = h;
+    },
+
+    auditorStart(position) {
+      if (!Number.isSafeInteger(position) || position < 1 || position > (head?.treeSize ?? 0))
+        throw new KTError(KTErrorCode.InvalidRequest);
+      return {
+        prefixRoot: copy(entries[position - 1]!.root),
+        fullSubtrees: fullSubtrees(position).map((r) => copy(snapshot(position).head(r))),
+        frontier: frontier(position).map((x) => entries[x]!.timestamp),
+      };
+    },
+
+    auditorUpdate(position) {
+      if (!Number.isSafeInteger(position) || position < 0 || position >= (head?.treeSize ?? 0))
+        throw new KTError(KTErrorCode.InvalidRequest);
+      if (Math.max(position - 1, 0) < pruned) throw new KTError(KTErrorCode.Expired);
+      const before = position ? entries[position - 1]!.tree : null;
+      const added = addedLeaves(before, entries[position]!.tree);
+      return encodeAuditorUpdate({
+        timestamp: entries[position]!.timestamp,
+        added,
+        removed: [],
+        leaves: [],
+        proof: prove(
+          before,
+          added.map((l) => l.vrfOutput),
+        ),
+      });
     },
   };
 }

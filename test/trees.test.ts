@@ -128,21 +128,28 @@ const logCase = fc.integer({ min: 1, max: 70 }).chain((n) =>
   fc.record({
     n: fc.constant(n),
     m: fc.integer({ min: 0, max: n }),
+    a: fc.integer({ min: 1, max: n }),
     leaves: fc.uniqueArray(fc.integer({ min: 0, max: n - 1 }), { minLength: 1, maxLength: 8 }),
   }),
 );
 
-function proveLog(n: number, m: number, leaves: number[]) {
+function proveLog(n: number, m: number, leaves: number[], also?: number) {
   const all = heads(n);
   const known = new Map(leaves.map((i) => [i, logLeaf(i, hash(i))]));
   const retained = m ? { size: m, heads: fullSubtrees(m).map((r) => all.get(key(r))!) } : undefined;
   const elements: Uint8Array[] = [];
-  const proved = computeRoot(n, known, retained, (r) => {
-    const v = all.get(key(r));
-    if (!v) throw new Error(`not balanced ${key(r)}`);
-    elements.push(v);
-    return v;
-  });
+  const proved = computeRoot(
+    n,
+    known,
+    retained,
+    (r) => {
+      const v = all.get(key(r));
+      if (!v) throw new Error(`not balanced ${key(r)}`);
+      elements.push(v);
+      return v;
+    },
+    also,
+  );
   return { all, known, retained, elements, proved };
 }
 
@@ -151,13 +158,20 @@ function verifyLog(
   known: Map<number, Uint8Array>,
   retained: ReturnType<typeof proveLog>["retained"],
   elements: Uint8Array[],
+  also?: number,
 ) {
   let i = 0;
-  const out = computeRoot(n, known, retained, () => {
-    const e = elements[i++];
-    if (!e) throw new Error("short");
-    return e;
-  });
+  const out = computeRoot(
+    n,
+    known,
+    retained,
+    () => {
+      const e = elements[i++];
+      if (!e) throw new Error("short");
+      return e;
+    },
+    also,
+  );
   if (i !== elements.length) throw new Error("long");
   return out;
 }
@@ -169,6 +183,19 @@ describe("log tree", () => {
     expect(proved.full).toEqual(expected);
     expect(proved.root).toEqual(rootFromFullSubtrees(n, expected));
     expect(verifyLog(n, known, retained, elements).root).toEqual(proved.root);
+  });
+
+  test.prop([logCase])("the same batch proof also gives the root at an auditor's size", ({ n, m, a, leaves }) => {
+    const { all, known, retained, elements, proved } = proveLog(n, m, leaves, a);
+    expect(proved.alsoRoot).toEqual(
+      rootFromFullSubtrees(
+        a,
+        fullSubtrees(a).map((r) => all.get(key(r))!),
+      ),
+    );
+    const verified = verifyLog(n, known, retained, elements, a);
+    expect(verified.root).toEqual(proved.root);
+    expect(verified.alsoRoot).toEqual(proved.alsoRoot);
   });
 
   test.prop([fc.integer({ min: 1, max: 70 })])(

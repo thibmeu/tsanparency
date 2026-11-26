@@ -1,6 +1,6 @@
 /**
- * Durable storage for a log. The log serves reads from memory and persists one
- * record per log entry, from which it rebuilds every tree when it opens.
+ * Durable storage for a log or an auditor. Both serve from memory and persist one
+ * record per log entry, from which they rebuild their state when they open.
  */
 
 /** A version of a label created in a log entry */
@@ -22,21 +22,21 @@ export interface StoredEntry {
   readonly signature: Uint8Array;
 }
 
-export interface Store {
+export interface Store<T = StoredEntry> {
   /** Committed entries from position `from` onward, in order */
-  read(from: number): AsyncIterable<StoredEntry>;
+  read(from: number): AsyncIterable<T>;
   /**
    * Stores `entry` at `position` atomically, as a linearizable put-if-absent
    * that an eventually consistent store cannot provide. Throws if an entry
    * already exists there, which is how concurrent writers on one store detect
    * each other. When it throws after storing, the log notices on catch-up.
    */
-  append(position: number, entry: StoredEntry): Promise<void>;
+  append(position: number, entry: T): Promise<void>;
 }
 
 /** A store that keeps entries in memory, for tests and ephemeral logs */
-export function memoryStore(): Store {
-  const entries: StoredEntry[] = [];
+export function memoryStore<T = StoredEntry>(): Store<T> {
+  const entries: T[] = [];
   return {
     async *read(from) {
       for (let i = from; i < entries.length; i++) yield entries[i]!;

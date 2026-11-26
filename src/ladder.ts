@@ -25,6 +25,14 @@ export function baseLadder(n: number): number[] {
   return out.filter((v) => v <= MAX_VERSION);
 }
 
+/** VRF proofs needed to advance an owner from one greatest version to another. */
+export function updateLadder(before: number, after: number): number[] {
+  const wanted = new Set(baseLadder(after));
+  for (let v = before + 1; v <= after; v++) wanted.add(v);
+  for (const v of before < 0 ? [0] : baseLadder(before)) wanted.delete(v);
+  return [...wanted].sort((a, b) => a - b);
+}
+
 /** Lookups of a monitoring binary ladder for target t (Section 8.1). */
 export const monitoringLadder = (t: number): number[] => baseLadder(t).filter((v) => v <= t);
 

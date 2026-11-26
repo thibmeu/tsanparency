@@ -1,9 +1,11 @@
-/** Wire messages for Search and Contact Monitor (Sections 11.4, 12, 13.1, 13.2). */
+/** Wire messages for the user operations and auditing (Sections 11.3, 11.4, 12, 13, 15.2). */
 import { NC, NH } from "./crypto.ts";
-import { type PrefixProof, type PrefixSearchResult, ResultType } from "./prefix.ts";
+import { type PrefixLeaf, type PrefixProof, type PrefixSearchResult, ResultType } from "./prefix.ts";
 import { DecodeError, type Reader, Writer } from "./tls.ts";
 
-/** A binary ladder never has more than 65 lookups. Bounding counts keeps hostile lengths cheap. */
+/** Fits 255 default 64 KiB values and their UpdateRequest framing. */
+export const DEFAULT_UPDATE_REQUEST_BYTES = 16 << 20;
+
 /** Results per prefix proof, enough for every new version of a 255 value update */
 const MAX_RESULTS = 256;
 const MAX_KEY_BITS = 8 * NH;
@@ -11,6 +13,8 @@ const MAX_KEY_BITS = 8 * NH;
 export interface TreeHead {
   readonly treeSize: number;
   readonly signature: Uint8Array;
+  /** Present in Third-Party Auditing mode (Section 11.4) */
+  readonly auditor?: AuditorTreeHead | undefined;
 }
 
 export interface CombinedTreeProof {
@@ -61,32 +65,39 @@ export interface ContactMonitorResponse {
 const writeLast = (w: Writer, last: number | undefined): Writer => (last === undefined ? w.u8(0) : w.u8(1).u64(last));
 const readLast = (r: Reader): number | undefined => (r.present() ? r.u64() : undefined);
 
-function writeTreeHead(w: Writer, h: TreeHead | undefined): void {
+export function writeTreeHead(w: Writer, h: TreeHead | undefined): void {
   if (!h) w.u8(1);
-  else w.u8(2).u64(h.treeSize).opaque(2, h.signature);
+  else {
+    w.u8(2).u64(h.treeSize).opaque(2, h.signature);
+    if (h.auditor) w.bytes(encodeAuditorTreeHead(h.auditor));
+  }
 }
 
-function readTreeHead(r: Reader): TreeHead | undefined {
+/** FullTreeHead, which carries an AuditorTreeHead when `audited` (Section 11.4) */
+function readTreeHead(r: Reader, audited: boolean): TreeHead | undefined {
   const type = r.u8();
   if (type === 1) return undefined;
   if (type !== 2) throw new DecodeError("invalid head type");
-  return { treeSize: r.u64(), signature: r.opaque(2, 64) };
+  const head = { treeSize: r.u64(), signature: r.opaque(2, 64) };
+  return audited ? { ...head, auditor: decodeAuditorTreeHead(r) } : head;
 }
 
-function writeCombined(w: Writer, p: CombinedTreeProof): void {
+export function writePrefixProof(w: Writer, pp: PrefixProof): void {
+  w.count(4, pp.results.length);
+  for (const res of pp.results) {
+    w.u8(res.type);
+    if (res.type === ResultType.NonInclusionLeaf) w.bytes(res.leaf.vrfOutput).bytes(res.leaf.commitment);
+    w.u8(res.depth);
+  }
+  w.count(4, pp.elements.length);
+  for (const e of pp.elements) w.bytes(e);
+}
+
+export function writeCombined(w: Writer, p: CombinedTreeProof): void {
   w.count(1, p.timestamps.length);
   for (const t of p.timestamps) w.u64(t);
   w.count(1, p.prefixProofs.length);
-  for (const pp of p.prefixProofs) {
-    w.count(4, pp.results.length);
-    for (const res of pp.results) {
-      w.u8(res.type);
-      if (res.type === ResultType.NonInclusionLeaf) w.bytes(res.leaf.vrfOutput).bytes(res.leaf.commitment);
-      w.u8(res.depth);
-    }
-    w.count(4, pp.elements.length);
-    for (const e of pp.elements) w.bytes(e);
-  }
+  for (const pp of p.prefixProofs) writePrefixProof(w, pp);
   w.count(1, p.prefixRoots.length);
   for (const root of p.prefixRoots) w.bytes(root);
   w.count(2, p.inclusion.length);
@@ -103,13 +114,15 @@ function readResult(r: Reader): PrefixSearchResult {
   return { type, depth: r.u8() };
 }
 
+function readPrefixProof(r: Reader, maxResults: number): PrefixProof {
+  const results = Array.from({ length: r.count(4, 2, maxResults) }, () => readResult(r));
+  const elements = Array.from({ length: r.count(4, NH, results.length * MAX_KEY_BITS) }, () => r.bytes(NH));
+  return { results, elements };
+}
+
 function readCombined(r: Reader): CombinedTreeProof {
   const timestamps = Array.from({ length: r.count(1, 8) }, () => r.u64());
-  const prefixProofs = Array.from({ length: r.count(1, 8) }, () => {
-    const results = Array.from({ length: r.count(4, 2, MAX_RESULTS) }, () => readResult(r));
-    const elements = Array.from({ length: r.count(4, NH, results.length * MAX_KEY_BITS) }, () => r.bytes(NH));
-    return { results, elements };
-  });
+  const prefixProofs = Array.from({ length: r.count(1, 8) }, () => readPrefixProof(r, MAX_RESULTS));
   const prefixRoots = Array.from({ length: r.count(1, NH) }, () => r.bytes(NH));
   const inclusion = Array.from({ length: r.count(2, NH) }, () => r.bytes(NH));
   return { timestamps, prefixProofs, prefixRoots, inclusion };
@@ -146,8 +159,8 @@ export function encodeSearchResponse(res: SearchResponse, fixed = false): Uint8A
  * `proofLength` is VRF.Np for the configured cipher suite, and `fixed` the
  * version of a fixed-version request, which the response then omits
  */
-export function decodeSearchResponse(r: Reader, proofLength: number, fixed?: number): SearchResponse {
-  const treeHead = readTreeHead(r);
+export function decodeSearchResponse(r: Reader, audited: boolean, proofLength: number, fixed?: number): SearchResponse {
+  const treeHead = readTreeHead(r, audited);
   const version = fixed ?? r.u32();
   const opening = r.bytes(NC);
   const value = r.opaque(4);
@@ -178,8 +191,8 @@ export function encodeContactMonitorResponse(res: ContactMonitorResponse): Uint8
   return w.finish();
 }
 
-export function decodeContactMonitorResponse(r: Reader): ContactMonitorResponse {
-  return { treeHead: readTreeHead(r), monitor: readCombined(r) };
+export function decodeContactMonitorResponse(r: Reader, audited: boolean): ContactMonitorResponse {
+  return { treeHead: readTreeHead(r, audited), monitor: readCombined(r) };
 }
 
 export interface OwnerInitRequest {
@@ -266,8 +279,8 @@ export function encodeOwnerInitResponse(res: OwnerInitResponse): Uint8Array {
   return w.finish();
 }
 
-export function decodeOwnerInitResponse(r: Reader, proofLength: number): OwnerInitResponse {
-  const treeHead = readTreeHead(r);
+export function decodeOwnerInitResponse(r: Reader, audited: boolean, proofLength: number): OwnerInitResponse {
+  const treeHead = readTreeHead(r, audited);
   const greatestVersions = Array.from({ length: r.count(1, 4) }, () => r.u32());
   return { treeHead, greatestVersions, binaryLadder: readLadder(r, 2, proofLength), init: readCombined(r) };
 }
@@ -293,8 +306,8 @@ export function encodeOwnerMonitorResponse(res: OwnerMonitorResponse): Uint8Arra
   return w.finish();
 }
 
-export const decodeOwnerMonitorResponse = (r: Reader): OwnerMonitorResponse => ({
-  treeHead: readTreeHead(r),
+export const decodeOwnerMonitorResponse = (r: Reader, audited: boolean): OwnerMonitorResponse => ({
+  treeHead: readTreeHead(r, audited),
   monitor: readCombined(r),
 });
 
@@ -326,10 +339,68 @@ export function encodeUpdateResponse(res: UpdateResponse): Uint8Array {
   return w.finish();
 }
 
-export function decodeUpdateResponse(r: Reader, proofLength: number): UpdateResponse {
-  const treeHead = readTreeHead(r);
+export function decodeUpdateResponse(r: Reader, audited: boolean, proofLength: number): UpdateResponse {
+  const treeHead = readTreeHead(r, audited);
   const position = r.u64();
   const values = Array.from({ length: r.count(1, 4) }, () => r.opaque(4));
   const openings = Array.from({ length: r.count(1, NC) }, () => r.bytes(NC));
   return { treeHead, position, values, openings, binaryLadder: readLadder(r, 1, proofLength), update: readCombined(r) };
+}
+
+export interface AuditorTreeHead {
+  readonly timestamp: number;
+  readonly treeSize: number;
+  readonly signature: Uint8Array;
+}
+
+export const encodeAuditorTreeHead = (h: AuditorTreeHead): Uint8Array =>
+  new Writer().u64(h.timestamp).u64(h.treeSize).opaque(2, h.signature).finish();
+
+export const decodeAuditorTreeHead = (r: Reader): AuditorTreeHead => ({
+  timestamp: r.u64(),
+  treeSize: r.u64(),
+  signature: r.opaque(2, 64),
+});
+
+/** Changes to the prefix tree in one log entry, with a proof against the previous entry's tree (Section 15.2) */
+export interface AuditorUpdate {
+  readonly timestamp: number;
+  readonly added: readonly PrefixLeaf[];
+  readonly removed: readonly PrefixLeaf[];
+  /** Leaves moved closer to the root because their sibling became empty */
+  readonly leaves: readonly PrefixLeaf[];
+  /** Results for added, then removed, then leaves */
+  readonly proof: PrefixProof;
+}
+
+function writeLeaves(w: Writer, leaves: readonly PrefixLeaf[]): void {
+  w.count(4, leaves.length);
+  for (const l of leaves) w.bytes(l.vrfOutput).bytes(l.commitment);
+}
+
+const readLeaves = (r: Reader, max: number): PrefixLeaf[] =>
+  Array.from({ length: r.count(4, 2 * NH, max) }, () => ({ vrfOutput: r.bytes(NH), commitment: r.bytes(NH) }));
+
+export function encodeAuditorUpdate(u: AuditorUpdate): Uint8Array {
+  const w = new Writer().u64(u.timestamp);
+  writeLeaves(w, u.added);
+  writeLeaves(w, u.removed);
+  writeLeaves(w, u.leaves);
+  writePrefixProof(w, u.proof);
+  return w.finish();
+}
+
+/** Decodes an AuditorUpdate naming at most `maxLeaves` leaves */
+export function decodeAuditorUpdate(r: Reader, maxLeaves: number): AuditorUpdate {
+  const timestamp = r.u64();
+  const added = readLeaves(r, maxLeaves);
+  const removed = readLeaves(r, maxLeaves - added.length);
+  const leaves = readLeaves(r, maxLeaves - added.length - removed.length);
+  return {
+    timestamp,
+    added,
+    removed,
+    leaves,
+    proof: readPrefixProof(r, added.length + removed.length + leaves.length),
+  };
 }

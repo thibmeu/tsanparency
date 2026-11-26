@@ -64,18 +64,22 @@ export interface Retained {
  * Computes the root of a tree with n leaves from known leaf values, retained full
  * subtree heads, and balanced subtree heads supplied by `element` in left-to-right
  * order. The prover passes an `element` that records stored heads, the verifier one
- * that consumes the proof. Retained heads recomputed from leaves must match.
+ * that consumes the proof. Retained heads recomputed from leaves must match. With
+ * `also`, the same elements also give the root at that smaller size (Section 12.3).
  */
 export function computeRoot(
   n: number,
   leaves: ReadonlyMap<number, Uint8Array>,
   retained: Retained | undefined,
   element: (r: Range) => Uint8Array,
-): { root: Uint8Array; full: Uint8Array[] } {
+  also?: number,
+): { root: Uint8Array; full: Uint8Array[]; alsoRoot?: Uint8Array } {
   const m = retained?.size ?? 0;
   const old = m > 0 ? fullSubtrees(m) : [];
   const fresh = fullSubtrees(n);
   const full: Uint8Array[] = Array.from({ length: fresh.length });
+  const wanted = also === undefined ? [] : fullSubtrees(also);
+  const alsoFull: Uint8Array[] = Array.from({ length: wanted.length });
   const sorted = [...leaves.keys()].sort((a, b) => a - b);
   const hasLeaf = (start: number, size: number): boolean => {
     let lo = 0;
@@ -93,9 +97,12 @@ export function computeRoot(
     const kept = i >= 0 ? retained!.heads[i]! : undefined;
     const any = hasLeaf(start, size);
     let value: Uint8Array;
-    const coversRetained = old.some((r) => start <= r.start && r.start + r.size <= start + size);
-    if (kept && !any) value = kept;
-    else if (!any && !coversRetained && isPow2(size)) value = element({ start, size });
+    const covers = (r: Range) => start <= r.start && r.start + r.size <= start + size;
+    const coversRetained = old.some(covers);
+    // A head of the smaller tree inside this subtree must be computed on its own
+    const holdsWanted = wanted.some((r) => covers(r) && r.size < size);
+    if (kept && !any && !holdsWanted) value = kept;
+    else if (!any && !coversRetained && !holdsWanted && isPow2(size)) value = element({ start, size });
     else if (size === 1) value = leaves.get(start)!;
     else {
       const k = split(size);
@@ -104,7 +111,10 @@ export function computeRoot(
     if (kept && !equalBytes(value, kept)) throw new Error("retained subtree mismatch");
     const j = fresh.findIndex((r) => r.start === start && r.size === size);
     if (j >= 0) full[j] = value;
+    const k = wanted.findIndex((r) => r.start === start && r.size === size);
+    if (k >= 0) alsoFull[k] = value;
     return value;
   };
-  return { root: node(0, n), full };
+  const root = node(0, n);
+  return also === undefined ? { root, full } : { root, full, alsoRoot: rootFromFullSubtrees(also, alsoFull) };
 }

@@ -17,8 +17,11 @@ export {
   Operation,
   createClient,
 } from "./client.ts";
+export { type AuditedEntry, type Auditor, type AuditorOptions, type AuditorStart, openAuditor } from "./auditor.ts";
 export type { FrontierEntry } from "./combined.ts";
-export { CipherSuite, type Configuration, vrfPublicKey } from "./crypto.ts";
+export { type CipherSuite, type Configuration, vrfPublicKey } from "./crypto.ts";
+export { KT_128_SHA256_Ed25519 } from "./ed25519.ts";
+export { KT_128_SHA256_P256 } from "./p256.ts";
 export { KTError, KTErrorCode, isKTError } from "./errors.ts";
 export {
   type Authorization,

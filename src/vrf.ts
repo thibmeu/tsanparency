@@ -1,22 +1,7 @@
-/**
- * ECVRF with try-and-increment encode_to_curve (RFC 9381 Section 5), in the two
- * suites KT uses: ECVRF-P256-SHA256-TAI and ECVRF-EDWARDS25519-SHA512-TAI, the
- * latter with its output truncated to 32 bytes (protocol Section 17.1).
- */
-import { ed25519 } from "@noble/curves/ed25519.js";
-import { p256 } from "@noble/curves/nist.js";
-import {
-  bytesToNumberBE,
-  bytesToNumberLE,
-  concatBytes,
-  createHmacDrbg,
-  numberToBytesBE,
-  numberToBytesLE,
-} from "@noble/curves/utils.js";
-import { hmac } from "@noble/hashes/hmac.js";
-import { sha256, sha512 } from "@noble/hashes/sha2.js";
+/** ECVRF with try-and-increment encode_to_curve (RFC 9381 Section 5) over a curve suite */
+import { concatBytes } from "@noble/curves/utils.js";
 
-interface Point<P> {
+export interface Point<P> {
   add(o: P): P;
   subtract(o: P): P;
   multiply(k: bigint): P;
@@ -27,7 +12,7 @@ interface Point<P> {
   mulAddUnsafe?(a: bigint, other: P, b: bigint): P;
 }
 
-interface Suite<P extends Point<P>> {
+export interface Suite<P extends Point<P>> {
   readonly id: number;
   readonly hash: (b: Uint8Array) => Uint8Array;
   readonly base: P;
@@ -65,7 +50,7 @@ export interface Vrf {
   verifier(publicKey: Uint8Array): (alpha: Uint8Array, proof: Uint8Array) => Uint8Array | null;
 }
 
-function ecvrf<P extends Point<P>>(s: Suite<P>): Vrf {
+export function ecvrf<P extends Point<P>>(s: Suite<P>): Vrf {
   const proofLength = s.ptLen + C_LEN + 32;
   const tag = (domain: number, ...parts: Uint8Array[]) =>
     s.hash(concatBytes(new Uint8Array([s.id, domain]), ...parts, new Uint8Array([0])));
@@ -135,68 +120,3 @@ function ecvrf<P extends Point<P>>(s: Suite<P>): Vrf {
     },
   };
 }
-
-type P256Point = InstanceType<typeof p256.Point>;
-const p256Drbg = createHmacDrbg<bigint>(32, 32, (k: Uint8Array, m: Uint8Array) => hmac(sha256, k, m));
-
-/** ECVRF-P256-SHA256-TAI (RFC 9381 Section 5.5) */
-export const P256_VRF: Vrf = ecvrf<P256Point>({
-  id: 0x01,
-  hash: sha256,
-  base: p256.Point.BASE,
-  q: p256.Point.Fn.ORDER,
-  ptLen: 33,
-  toInt: bytesToNumberBE,
-  toBytes: numberToBytesBE,
-  encode: (p) => p.toBytes(true),
-  decode: (b) => {
-    if (b.length !== 33) throw new Error("invalid point");
-    return p256.Point.fromBytes(b);
-  },
-  hashToPoint: (h) => p256.Point.fromBytes(concatBytes(new Uint8Array([0x02]), h)),
-  clearCofactor: (p) => p,
-  secret(sk) {
-    const q = p256.Point.Fn.ORDER;
-    const x = sk.length === 32 ? bytesToNumberBE(sk) : 0n;
-    if (x < 1n || x >= q) throw new Error("invalid VRF secret key");
-    return {
-      x,
-      // RFC 6979 Section 3.2 with m set to h_string and no DSA suitability check (Section 5.4.2.1)
-      nonce: (hString) => {
-        const h1 = bytesToNumberBE(sha256(hString)) % q;
-        const seed = concatBytes(numberToBytesBE(x, 32), numberToBytesBE(h1, 32));
-        return p256Drbg(seed, (v) => {
-          const k = bytesToNumberBE(v);
-          return k >= 1n && k < q ? k : undefined;
-        });
-      },
-    };
-  },
-});
-
-type EdPoint = InstanceType<typeof ed25519.Point>;
-
-/** ECVRF-EDWARDS25519-SHA512-TAI (RFC 9381 Section 5.5) with outputs truncated to 32 bytes */
-export const ED25519_VRF: Vrf = ecvrf<EdPoint>({
-  id: 0x03,
-  hash: sha512,
-  base: ed25519.Point.BASE,
-  q: ed25519.Point.Fn.ORDER,
-  ptLen: 32,
-  toInt: bytesToNumberLE,
-  toBytes: numberToBytesLE,
-  encode: (p) => p.toBytes(),
-  decode: (b) => {
-    if (b.length !== 32) throw new Error("invalid point");
-    return ed25519.Point.fromBytes(b);
-  },
-  hashToPoint: (h) => ed25519.Point.fromBytes(h.subarray(0, 32)).clearCofactor(),
-  clearCofactor: (p) => p.clearCofactor(),
-  secret(sk) {
-    if (sk.length !== 32) throw new Error("invalid VRF secret key");
-    // RFC 8032 Section 5.1.5 key expansion, then the nonce of Section 5.4.2.2
-    const { scalar, prefix } = ed25519.utils.getExtendedPublicKey(sk);
-    const q = ed25519.Point.Fn.ORDER;
-    return { x: scalar, nonce: (hString) => bytesToNumberLE(sha512(concatBytes(prefix, hString))) % q };
-  },
-});

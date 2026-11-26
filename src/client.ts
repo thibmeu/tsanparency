@@ -21,17 +21,18 @@ import {
 import {
   type Configuration,
   NH,
+  auditorTreeHeadVerifier,
   commitment,
   encodeConfiguration,
-  suiteOf,
   treeHeadVerifier,
   vrfInput,
 } from "./crypto.ts";
 import { KTError, KTErrorCode, isKTError } from "./errors.ts";
 import { ancestors, frontier } from "./ibst.ts";
-import { MAX_VERSION, baseLadder, monitoringLadder } from "./ladder.ts";
+import { MAX_VERSION, baseLadder, monitoringLadder, updateLadder } from "./ladder.ts";
 import { fullSubtrees, rootFromFullSubtrees } from "./logtree.ts";
 import {
+  DEFAULT_UPDATE_REQUEST_BYTES,
   type BinaryLadderStep,
   type MonitorMapEntry,
   decodeOwnerInitResponse,
@@ -40,6 +41,7 @@ import {
   encodeOwnerInitRequest,
   encodeOwnerMonitorRequest,
   encodeUpdateRequest,
+  type AuditorTreeHead,
   type TreeHead,
   decodeContactMonitorResponse,
   decodeSearchResponse,
@@ -69,6 +71,8 @@ export interface Checkpoint extends View {
   readonly binding: Uint8Array;
   readonly root: Uint8Array;
   readonly signature: Uint8Array;
+  /** Latest verified AuditorTreeHead, in Third-Party Auditing mode */
+  readonly auditor?: AuditorTreeHead | undefined;
 }
 
 export interface LadderEntry {
@@ -234,13 +238,16 @@ export async function createClient(
 ): Promise<Client> {
   const binding = sha256(concatBytes(DRAFT, encodeConfiguration(config)));
   const verifyHead = await treeHeadVerifier(config);
-  const { vrf } = suiteOf(config);
+  const audited = config.auditor !== undefined;
+  const verifyAuditor = config.auditor && (await auditorTreeHeadVerifier(config));
+  const { vrf } = config.cipherSuite;
   const vrfVerify = vrf.verifier(config.vrfPublicKey);
   const now = options.now ?? Date.now;
-  const maxResponseBytes = options.maxResponseBytes ?? 1 << 20;
 
   async function call(op: Operation, request: Uint8Array, signal: AbortSignal | undefined): Promise<Uint8Array> {
     signal?.throwIfAborted();
+    const maxResponseBytes =
+      options.maxResponseBytes ?? (1 << 20) + (op === Operation.Update ? DEFAULT_UPDATE_REQUEST_BYTES : 0);
     let response: Uint8Array;
     try {
       response = await exchange(op, request, { signal, maxResponseBytes });
@@ -262,20 +269,34 @@ export async function createClient(
     previous: Checkpoint | undefined,
     signal: AbortSignal | undefined,
   ): Promise<Checkpoint> {
-    const { view, root } = verifier.finish();
+    if (head?.auditor && head.auditor.treeSize < 1) throw new Error("empty auditor tree");
+    const { view, root, auditorRoot } = verifier.finish(head?.auditor?.treeSize);
+    const rightmost = view.frontier.at(-1)!.timestamp;
     let signature: Uint8Array;
+    let auditor = previous?.auditor;
     if (head) {
       signal?.throwIfAborted();
       if (!(await verifyHead(head.treeSize, root, head.signature))) throw new Error("invalid tree head signature");
       signature = head.signature;
+      if (config.auditor) {
+        // Section 11.3
+        const a = head.auditor!;
+        if (previous && !(previous.auditor!.treeSize >= config.auditor.startPosition))
+          throw new Error("auditor started after the previous head");
+        if (a.timestamp > rightmost) throw new Error("auditor ahead of the log");
+        if (a.treeSize > head.treeSize) throw new Error("auditor tree size beyond the log");
+        if (!(await verifyAuditor!(a.timestamp, a.treeSize, auditorRoot!, a.signature)))
+          throw new Error("invalid auditor tree head signature");
+        if (rightmost - a.timestamp > config.auditor.maxLag) throw new KTError(KTErrorCode.Stale);
+        auditor = a;
+      }
     } else {
       if (!previous || !equalBytes(root, previous.root)) throw new Error("root differs from the retained head");
       signature = previous.signature;
     }
-    const rightmost = view.frontier.at(-1)!.timestamp;
     const t = now();
     if (rightmost > t + config.maxAhead || rightmost < t - config.maxBehind) throw new KTError(KTErrorCode.Stale);
-    return { binding, ...view, root, signature };
+    return { binding, ...view, root, signature, ...(auditor && { auditor }) };
   }
 
   /** New tree size, which must exceed the advertised one when the head is updated (Section 11.4) */
@@ -297,7 +318,7 @@ export async function createClient(
 
   return {
     schedule(record, { checkpoint: saved }) {
-      const checkpoint = checkCheckpoint(saved, binding);
+      const checkpoint = checkCheckpoint(saved, binding, audited);
       const map = checkContact(record, binding, record.label).monitoring;
       if (!map.length) return undefined;
       const rmw = config.reasonableMonitoringWindow;
@@ -321,13 +342,13 @@ export async function createClient(
     async search(label, { checkpoint: saved, contact: record, signal, version } = {}) {
       if (version !== undefined && !isUint(version, MAX_VERSION)) throw new KTError(KTErrorCode.InvalidRequest);
       const name = toLabel(label);
-      const checkpoint = saved === undefined ? undefined : checkCheckpoint(saved, binding);
+      const checkpoint = saved === undefined ? undefined : checkCheckpoint(saved, binding, audited);
       if (record && !checkpoint) throw new KTError(KTErrorCode.InvalidState);
       const prior = record && checkContact(record, binding, name);
       const last = checkpoint?.treeSize;
       const bytes = await call(Operation.Search, encodeSearchRequest({ last, label: name, version }), signal);
       try {
-        const res = decode(bytes, (r) => decodeSearchResponse(r, vrf.proofLength, version));
+        const res = decode(bytes, (r) => decodeSearchResponse(r, audited, vrf.proofLength, version));
         const t = res.version;
         const versions = baseLadder(t);
         if (res.binaryLadder.length !== versions.length) throw new Error("unexpected binary ladder length");
@@ -376,7 +397,7 @@ export async function createClient(
 
     async monitor(record, { checkpoint: saved, signal }) {
       const name = toLabel(record.label);
-      const checkpoint = checkCheckpoint(saved, binding);
+      const checkpoint = checkCheckpoint(saved, binding, audited);
       const contact = checkContact(record, binding, name);
       if (contact.monitoring.length === 0) return { checkpoint, contact };
       if (contact.monitoring.some((e) => e.position >= checkpoint.treeSize))
@@ -385,7 +406,7 @@ export async function createClient(
       const request = encodeContactMonitorRequest({ last, label: name, entries: contact.monitoring });
       const bytes = await call(Operation.ContactMonitor, request, signal);
       try {
-        const res = decode(bytes, decodeContactMonitorResponse);
+        const res = decode(bytes, (r) => decodeContactMonitorResponse(r, audited));
         const n = treeSize(res.treeHead, last);
         const data = new Map(contact.ladder.map((e) => [e.version, e]));
         const verifier = new Verifier(n, checkpoint, res.monitor, data);
@@ -402,12 +423,12 @@ export async function createClient(
 
     async ownerInit(label, { checkpoint: saved, signal, start } = {}) {
       const name = toLabel(label);
-      const checkpoint = saved === undefined ? undefined : checkCheckpoint(saved, binding);
+      const checkpoint = saved === undefined ? undefined : checkCheckpoint(saved, binding, audited);
       if (start !== undefined && !isUint(start)) throw new KTError(KTErrorCode.InvalidRequest);
       const last = checkpoint?.treeSize;
       const bytes = await call(Operation.OwnerInit, encodeOwnerInitRequest({ last, label: name, start }), signal);
       try {
-        const res = decode(bytes, (r) => decodeOwnerInitResponse(r, vrf.proofLength));
+        const res = decode(bytes, (r) => decodeOwnerInitResponse(r, audited, vrf.proofLength));
         const n = treeSize(res.treeHead, last);
         const greatest = res.greatestVersions;
         // VRF proofs for version 0 and the search ladders of each greatest version, with
@@ -431,7 +452,7 @@ export async function createClient(
 
     async update(record, values, { checkpoint: saved, signal }) {
       const name = toLabel(record.label);
-      const checkpoint = checkCheckpoint(saved, binding);
+      const checkpoint = checkCheckpoint(saved, binding, audited);
       const owner = checkOwner(record, binding, name);
       if (!Array.isArray(values) || values.length > 255 || !values.every((v) => v instanceof Uint8Array))
         throw new KTError(KTErrorCode.InvalidRequest);
@@ -450,7 +471,7 @@ export async function createClient(
         throw e;
       }
       try {
-        const res = decode(bytes, (r) => decodeUpdateResponse(r, vrf.proofLength));
+        const res = decode(bytes, (r) => decodeUpdateResponse(r, audited, vrf.proofLength));
         const n = treeSize(res.treeHead, last);
         if (res.position >= n) throw new Error("update position is outside the tree");
         if (history.lastUpdate !== undefined && res.position <= history.lastUpdate)
@@ -461,17 +482,7 @@ export async function createClient(
         const after = (before ?? -1) + created.length;
         if (after > MAX_VERSION) throw new Error("too many versions");
         // VRF proofs the owner lacks, with commitments only below its greatest version (Section 13.5)
-        const wanted = new Set([
-          ...baseLadder(after),
-          ...(created.length > 1 ? created.map((_, i) => (before ?? -1) + 1 + i) : []),
-        ]);
-        for (const v of before === undefined ? [0] : baseLadder(before)) wanted.delete(v);
-        const fresh = ladderData(
-          name,
-          [...wanted].sort((a, b) => a - b),
-          res.binaryLadder,
-          (v) => v < (before ?? -1),
-        );
+        const fresh = ladderData(name, updateLadder(before ?? -1, after), res.binaryLadder, (v) => v < (before ?? -1));
         const data = new Map<number, LadderData>(owner.versions.map((e) => [e.version, e]));
         for (const [v, d] of fresh)
           data.set(v, { ...data.get(v), ...d, commitment: d.commitment ?? data.get(v)?.commitment });
@@ -522,7 +533,7 @@ export async function createClient(
 
     async ownerMonitor(record, { checkpoint: saved, signal }) {
       const name = toLabel(record.label);
-      const checkpoint = checkCheckpoint(saved, binding);
+      const checkpoint = checkCheckpoint(saved, binding, audited);
       const owner = checkOwner(record, binding, name);
       if (owner.monitoring.some((e) => e.position >= checkpoint.treeSize)) throw new KTError(KTErrorCode.InvalidState);
       const last = checkpoint.treeSize;
@@ -536,7 +547,7 @@ export async function createClient(
       });
       const bytes = await call(Operation.OwnerMonitor, request, signal);
       try {
-        const res = decode(bytes, decodeOwnerMonitorResponse);
+        const res = decode(bytes, (r) => decodeOwnerMonitorResponse(r, audited));
         const n = treeSize(res.treeHead, last);
         const data = new Map<number, LadderData>(owner.versions.map((e) => [e.version, e]));
         const verifier = new Verifier(n, checkpoint, res.monitor, data);
@@ -737,7 +748,7 @@ const isUint = (x: unknown, max = Number.MAX_SAFE_INTEGER): x is number =>
   Number.isSafeInteger(x) && (x as number) >= 0 && (x as number) <= max;
 
 /** Validates restored state before trusting it. */
-function checkCheckpoint(c: Checkpoint, binding: Uint8Array): Checkpoint {
+function checkCheckpoint(c: Checkpoint, binding: Uint8Array, audited: boolean): Checkpoint {
   const ok =
     c != null &&
     isBytes(c.binding) &&
@@ -751,7 +762,14 @@ function checkCheckpoint(c: Checkpoint, binding: Uint8Array): Checkpoint {
     c.fullSubtrees.every((h) => isBytes(h, NH)) &&
     Array.isArray(c.frontier) &&
     sameFrontier(c.frontier, frontier(c.treeSize)) &&
-    equalBytes(rootFromFullSubtrees(c.treeSize, c.fullSubtrees), c.root);
+    equalBytes(rootFromFullSubtrees(c.treeSize, c.fullSubtrees), c.root) &&
+    (audited
+      ? c.auditor != null &&
+        isUint(c.auditor.timestamp) &&
+        isUint(c.auditor.treeSize) &&
+        c.auditor.treeSize <= c.treeSize &&
+        isBytes(c.auditor.signature, 64)
+      : c.auditor === undefined);
   if (!ok) throw new KTError(KTErrorCode.InvalidState);
   return c;
 }

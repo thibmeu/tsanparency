@@ -2,13 +2,15 @@
 import { bytesToHex, hexToBytes } from "@noble/curves/utils.js";
 import { describe, expect, test } from "vitest";
 import { type Context, rightmostDistinguished, updateView } from "../src/combined.ts";
-import { CipherSuite, commitment, encodeConfiguration, logLeaf, treeHeadVerifier, vrfInput } from "../src/crypto.ts";
+import { commitment, encodeConfiguration, logLeaf, treeHeadVerifier, vrfInput } from "../src/crypto.ts";
 import { frontier, hasLeft, hasRight, left, right, root } from "../src/ibst.ts";
 import { baseLadder, monitoringLadder, searchLadder } from "../src/ladder.ts";
-import { computeRoot, fullSubtrees } from "../src/logtree.ts";
+import { appendLeaf, computeRoot, fullSubtrees, rootFromFullSubtrees } from "../src/logtree.ts";
 import { type Node, evaluate, insert, prove, rootHash } from "../src/prefix.ts";
-import { Writer } from "../src/tls.ts";
-import { ED25519_VRF, P256_VRF } from "../src/vrf.ts";
+import localRequests from "./vectors/tsanparency/requests.json" with { type: "json" };
+import { decodeUpdateRequest, encodeUpdateRequest } from "../src/messages.ts";
+import { KT_128_SHA256_Ed25519, KT_128_SHA256_P256 } from "../src/index.ts";
+import { decode, Writer } from "../src/tls.ts";
 import v_vrf_p256 from "./vectors/or13/vrf-p256.json" with { type: "json" };
 import v_vrf from "./vectors/or13/vrf.json" with { type: "json" };
 import v_tree_head from "./vectors/or13/tree-head.json" with { type: "json" };
@@ -17,6 +19,8 @@ import v_binary_ladder from "./vectors/or13/binary-ladder.json" with { type: "js
 import v_ibst from "./vectors/or13/ibst.json" with { type: "json" };
 import v_update_view from "./vectors/or13/update-view.json" with { type: "json" };
 import v_log_tree from "./vectors/or13/log-tree.json" with { type: "json" };
+import katieAppend from "./vectors/or13/log-append.json" with { type: "json" };
+import localAppend from "./vectors/tsanparency/log-append.json" with { type: "json" };
 import v_prefix_tree from "./vectors/or13/prefix-tree.json" with { type: "json" };
 import v_distinguished from "./vectors/or13/distinguished.json" with { type: "json" };
 import v_tree_head_p256 from "./vectors/or13/tree-head-p256.json" with { type: "json" };
@@ -40,8 +44,8 @@ const cases = (file: string): Case[] => files[file]!.cases;
 const hex = (s: string) => hexToBytes(s);
 
 const vrfs = [
-  ["KT_128_SHA256_P256", "vrf-p256", P256_VRF],
-  ["KT_128_SHA256_Ed25519", "vrf", ED25519_VRF],
+  ["KT_128_SHA256_P256", "vrf-p256", KT_128_SHA256_P256.vrf],
+  ["KT_128_SHA256_Ed25519", "vrf", KT_128_SHA256_Ed25519.vrf],
 ] as const;
 
 describe.each(vrfs)("VRF with %s (Section 11.7)", (_, file, vrf) => {
@@ -193,8 +197,8 @@ describe("prefix tree (Sections 3.3, 11.9, 12.2)", () => {
 });
 
 const heads = [
-  ["KT_128_SHA256_P256", "tree-head-p256", CipherSuite.KT_128_SHA256_P256],
-  ["KT_128_SHA256_Ed25519", "tree-head", CipherSuite.KT_128_SHA256_Ed25519],
+  ["KT_128_SHA256_P256", "tree-head-p256", KT_128_SHA256_P256],
+  ["KT_128_SHA256_Ed25519", "tree-head", KT_128_SHA256_Ed25519],
 ] as const;
 
 describe.each(heads)("tree head with %s (Sections 11.2, 11.4)", (_, file, cipherSuite) => {
@@ -212,4 +216,30 @@ describe.each(heads)("tree head with %s (Sections 11.2, 11.4)", (_, file, cipher
     expect(await verify(input.tree_size, hex(input.root), hex(want.signature))).toBe(true);
     expect(await verify(input.tree_size + 1, hex(input.root), hex(want.signature))).toBe(false);
   });
+});
+
+for (const [source, vectors] of [
+  ["katie", katieAppend],
+  ["tsanparency", localAppend],
+] as const) {
+  test(`${source} log append sequence`, () => {
+    let heads: Uint8Array[] = [];
+    const leaves: string[] = [];
+    for (const { input, expect: expected } of vectors.cases) {
+      const [entry] = input.entries;
+      const leaf = logLeaf(entry!.timestamp, hex(entry!.prefix_tree));
+      heads = appendLeaf(leaves.length, heads, leaf);
+      leaves.push(bytesToHex(leaf));
+      expect(input.size).toBe(leaves.length);
+      expect(leaves).toEqual(input.leaves);
+      expect(heads.map(bytesToHex)).toEqual(expected.full_subtrees);
+      expect(bytesToHex(rootFromFullSubtrees(input.size, heads))).toBe(expected.root);
+    }
+  });
+}
+
+test.each(localRequests.cases)("update request $name", ({ input, expect: expected }) => {
+  const request = { label: hex(input.label), last: input.last, values: input.values.map(hex) };
+  expect(bytesToHex(encodeUpdateRequest(request))).toBe(expected.encoding);
+  expect(decode(hex(expected.encoding), decodeUpdateRequest)).toEqual(request);
 });

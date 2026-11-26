@@ -34,6 +34,10 @@ await persist(checked.checkpoint, checked.contact);
 
 Logs persist one record per entry through a `Store` (`memoryStore()` by default): implement `read` and an atomic `append` at a position to back it with a database. A log with a maximum lifetime drops the prefix trees of expired entries.
 
+With an `auditor` in the configuration (Third-Party Auditing), send `log.auditorUpdate(position)` for each position from `auditor.startPosition` to an auditor opened with `openAuditor(config, { signingKey, store })`. `apply(position, update)` verifies and stores an update, and `head()` signs the auditor tree head for everything verified so far. Pass that head to `log.acceptAuditorHead`, again after reopening the log, which serves it with every updated tree head. Clients check it and keep it in their checkpoint. An auditor starting after the first entry also takes `start: log.auditorStart(startPosition)`, which it trusts.
+
+Call `log.tick()` periodically on a quiet log so clients keep accepting its head. For a 60-second `maxBehind`, schedule a tick every 30 seconds.
+
 To follow the log tree without a log, `appendLeaf(size, fullSubtrees, leaf)` folds one leaf value into the full subtree heads, and `rootFromFullSubtrees` gives the root.
 
 Keep one checkpoint per log and a contact or owner record for each label you track. Save the returned checkpoint and record together before using a result. If calls overlap, check that both stored records still match what the call started from before replacing them. The records support structured clone and IndexedDB.
