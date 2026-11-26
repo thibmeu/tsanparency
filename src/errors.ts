@@ -1,6 +1,8 @@
 export const KTErrorCode = {
   /** The exchange failed or returned too many bytes. */
   Transport: "TRANSPORT",
+  /** The log's host failed, such as its `authorize` callback. */
+  Internal: "INTERNAL",
   /** The log shed load to protect itself. Retry later. */
   Overloaded: "OVERLOADED",
   /** A response failed verification. Persisted state is unaffected. */

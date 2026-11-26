@@ -274,10 +274,9 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
   async function publish(tree: Node, versions: readonly StoredVersion[], rollback: () => void): Promise<number> {
     const n = entries.length;
     const timestamp = Math.max(now(), entries.at(-1)?.timestamp ?? 0);
-    const root = grow(timestamp, tree);
     let signature: Uint8Array;
     try {
-      const tbs = treeHeadTBS(encodedConfig, n + 1, root);
+      const tbs = treeHeadTBS(encodedConfig, n + 1, grow(timestamp, tree));
       signature = new Uint8Array(await crypto.subtle.sign(suite.signature.sign, options.signingKey.privateKey, tbs));
     } catch (e) {
       shrinkTo(n);
@@ -615,7 +614,12 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
   }
 
   async function authorize(operation: Operation, label: Uint8Array, principal: string): Promise<void> {
-    const allowed = (await options.authorize?.({ operation, label, principal })) ?? operation === Operation.Search;
+    let allowed;
+    try {
+      allowed = (await options.authorize?.({ operation, label, principal })) ?? operation === Operation.Search;
+    } catch (cause) {
+      throw new KTError(KTErrorCode.Internal, { cause });
+    }
     if (!allowed) throw new KTError(KTErrorCode.Unauthorized);
   }
 
@@ -651,8 +655,8 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
     async handle(operation, request, { principal, signal }) {
       const maxBytes = operation === Operation.Update ? maxUpdateRequestBytes : limits.maxRequestBytes;
       if (request.length > maxBytes) throw new KTError(KTErrorCode.InvalidRequest);
+      if (!Object.hasOwn(handlers, operation)) throw new KTError(KTErrorCode.InvalidRequest);
       const handler = handlers[operation];
-      if (!handler) throw new KTError(KTErrorCode.InvalidRequest);
       if (activeReads >= limits.maxActiveReads) throw new KTError(KTErrorCode.Overloaded);
       activeReads++;
       try {
@@ -669,7 +673,7 @@ export async function openLog(config: Configuration, options: LogOptions): Promi
           else readers.delete(current.treeSize);
         }
       } catch (e) {
-        if (e instanceof KTError || (e instanceof DOMException && e.name === "AbortError")) throw e;
+        if (e instanceof KTError || e === broken || (e instanceof DOMException && e.name === "AbortError")) throw e;
         throw new KTError(KTErrorCode.InvalidRequest, { cause: e });
       } finally {
         activeReads--;
